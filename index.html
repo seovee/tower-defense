@@ -45,6 +45,21 @@
             color: #556;
             text-align: center;
         }
+        /* 모바일 대응: 좁은 화면에서 제목 축소, 안내 텍스트 숨김 */
+        @media (max-width: 768px), (max-height: 500px) {
+            body {
+                position: fixed;
+                width: 100%;
+                height: 100%;
+            }
+            h1 {
+                font-size: 0.9rem;
+                margin-bottom: 4px;
+            }
+            #info {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>

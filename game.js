@@ -12,16 +12,37 @@ const UI_ROWS = 3;
 const TOTAL_ROWS = ROWS + UI_ROWS;
 
 let TILE, W, H;
+let isMobile = false;
+
+const MIN_TILE = 36;
+const MAX_TILE = 56;
 
 function resize() {
-    const maxW = Math.min(window.innerWidth - 16, 1200);
-    const maxH = Math.min(window.innerHeight - 60, 900);
-    TILE = Math.floor(Math.min(maxW / COLS, maxH / TOTAL_ROWS));
-    if (TILE < 20) TILE = 20;
+    // 사용 가능한 화면 크기 계산 (여백 제외)
+    const availW = window.innerWidth - 16;
+    const availH = window.innerHeight - 60;
+
+    // 내부 해상도용 TILE 계산 (MIN_TILE ~ MAX_TILE 범위)
+    TILE = Math.floor(Math.min(availW / COLS, availH / TOTAL_ROWS));
+    TILE = Math.max(MIN_TILE, Math.min(MAX_TILE, TILE));
+
     W = COLS * TILE;
     H = TOTAL_ROWS * TILE;
+
+    // 내부 그리기 해상도 설정 (종이 크기)
     canvas.width = W;
     canvas.height = H;
+
+    // CSS 표시 크기 설정 (액자 크기) - 화면보다 크면 축소
+    const cssScale = Math.min(availW / W, availH / H, 1.0);
+    const cssW = Math.floor(W * cssScale);
+    const cssH = Math.floor(H * cssScale);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+
+    // 모바일 판별 (터치 지원 + 좁은 화면)
+    isMobile = ('ontouchstart' in window) && (window.innerWidth <= 768 || window.innerHeight <= 500);
+
     // Recalculate tower positions based on new TILE
     try {
         for (const t of towers) {
@@ -1216,11 +1237,13 @@ function draw() {
         ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
         ctx.fillText(type.desc, bx + btnW * 0.38, btnY + btnH * 0.78);
 
-        // Keyboard hint
-        ctx.fillStyle = '#444466';
-        ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
-        ctx.textAlign = 'right';
-        ctx.fillText(`[${i + 1}]`, bx + btnW - 6, btnY + btnH * 0.85);
+        // Keyboard hint (모바일에서는 숨김)
+        if (!isMobile) {
+            ctx.fillStyle = '#444466';
+            ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
+            ctx.textAlign = 'right';
+            ctx.fillText(`[${i + 1}]`, bx + btnW - 6, btnY + btnH * 0.85);
+        }
     }
 
     // Upgrade panel
@@ -1324,12 +1347,12 @@ function draw() {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (wave === 0) {
-            ctx.fillText('스페이스바 / 탭으로 시작', W / 2, TILE * 0.9);
+            ctx.fillText(isMobile ? '탭으로 시작' : '스페이스바 / 탭으로 시작', W / 2, TILE * 0.9);
         } else {
             ctx.fillText(`다음 웨이브: ${countdown}초`, W / 2, TILE * 0.7);
             ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
             ctx.fillStyle = '#aaa';
-            ctx.fillText('스페이스바 / 탭으로 스킵', W / 2, TILE * 1.15);
+            ctx.fillText(isMobile ? '탭으로 스킵' : '스페이스바 / 탭으로 스킵', W / 2, TILE * 1.15);
         }
     }
 
@@ -1350,7 +1373,7 @@ function draw() {
 
         ctx.fillStyle = '#88ccff';
         ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
-        ctx.fillText('클릭하여 다시 시작', W / 2, H * 0.55);
+        ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, H * 0.55);
     }
 }
 
