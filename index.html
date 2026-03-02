@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Tower Defense</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body {
+            background: #0a0a0f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            min-height: 100dvh;
+            font-family: 'Segoe UI', sans-serif;
+            overflow: hidden;
+            color: #e0e0e0;
+        }
+        h1 {
+            font-size: 1.4rem;
+            color: #88ccff;
+            margin-bottom: 8px;
+            letter-spacing: 2px;
+            text-shadow: 0 0 20px rgba(100,180,255,0.3);
+        }
+        #gameCanvas {
+            border-radius: 12px;
+            box-shadow: 0 0 40px rgba(100,180,255,0.15), 0 8px 32px rgba(0,0,0,0.6);
+            touch-action: none;
+            cursor: crosshair;
+            display: block;
+        }
+        #info {
+            margin-top: 8px;
+            font-size: 0.7rem;
+            color: #556;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>TOWER DEFENSE</h1>
+    <canvas id="gameCanvas"></canvas>
+    <div id="info">클릭/터치로 타워 배치 | 타워 클릭으로 업그레이드</div>
+    <script src="game.js"></script>
+</body>
+</html>
