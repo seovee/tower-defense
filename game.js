@@ -780,9 +780,9 @@ function update(dt) {
     }
     floatingTexts = floatingTexts.filter(ft => ft.life > 0);
 
-    // Upgrade panel timer
+    // Upgrade panel timer (실제 시간 기준 — 배속 영향 없음)
     if (showUpgradeFor) {
-        showUpgradeTimer -= dt;
+        showUpgradeTimer -= dt / gameSpeed;
         if (showUpgradeTimer <= 0) showUpgradeFor = null;
     }
 }
