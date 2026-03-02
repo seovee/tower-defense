@@ -2,6 +2,74 @@
 // Tower Defense - Hyper-casual Browser Game
 // ============================================================
 
+// ---- Poki SDK ----
+let pokiReady = false;
+let pokiGameplayActive = false;
+let adInProgress = false;
+let showRewardedAdOption = false; // 게임오버 시 보상형 광고 버튼 표시 여부
+let rewardedAdUsed = false; // 이번 게임에서 보상형 광고 사용 여부
+
+function pokiInit() {
+    if (typeof PokiSDK === 'undefined') return;
+    PokiSDK.init().then(() => {
+        pokiReady = true;
+        PokiSDK.gameLoadingFinished();
+    }).catch(() => {
+        // SDK 실패해도 게임은 정상 진행
+    });
+}
+
+function pokiGameplayStart() {
+    if (!pokiReady || pokiGameplayActive) return;
+    pokiGameplayActive = true;
+    PokiSDK.gameplayStart();
+}
+
+function pokiGameplayStop() {
+    if (!pokiReady || !pokiGameplayActive) return;
+    pokiGameplayActive = false;
+    PokiSDK.gameplayStop();
+}
+
+function pokiCommercialBreak() {
+    return new Promise((resolve) => {
+        if (!pokiReady) { resolve(); return; }
+        adInProgress = true;
+        soundMuted_backup = soundMuted;
+        soundMuted = true;
+        PokiSDK.commercialBreak().then(() => {
+            soundMuted = soundMuted_backup;
+            adInProgress = false;
+            resolve();
+        });
+    });
+}
+
+function pokiRewardedBreak() {
+    return new Promise((resolve) => {
+        if (!pokiReady) { resolve(false); return; }
+        adInProgress = true;
+        soundMuted_backup = soundMuted;
+        soundMuted = true;
+        PokiSDK.rewardedBreak().then((success) => {
+            soundMuted = soundMuted_backup;
+            adInProgress = false;
+            resolve(success);
+        });
+    });
+}
+
+let soundMuted_backup = false;
+
+// Poki 요구사항: 화살표/스페이스 키 브라우저 스크롤 방지
+window.addEventListener('keydown', (ev) => {
+    if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', ' '].includes(ev.key)) {
+        ev.preventDefault();
+    }
+});
+
+pokiInit();
+
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
@@ -723,7 +791,9 @@ function getWaveEnemies(waveNum) {
 
 // ---- Start wave ----
 function startWave() {
-    if (gameOver) return;
+    if (gameOver || adInProgress) return;
+    // Poki: 첫 웨이브 또는 재개 시 gameplayStart
+    pokiGameplayStart();
     wave++;
     bossWave = (wave % 5 === 0);
     if (bossWave) {
@@ -939,6 +1009,9 @@ function update(dt) {
                 gameOver = true;
                 gameOverTimer = 0;
                 soundManager.gameOverSound();
+                pokiGameplayStop();
+                // 이번 게임에서 보상형 광고 아직 안 썼으면 옵션 표시
+                showRewardedAdOption = !rewardedAdUsed && pokiReady;
             }
         }
 
@@ -2017,10 +2090,11 @@ function draw() {
             ctx.textBaseline = 'middle';
             ctx.fillText(`웨이브: ${wave}  점수: ${displayScore}`, W / 2, H * 0.43);
 
-            // High score
-            const hs = localStorage.getItem('td_highscore') || 0;
+            // High score (try/catch for incognito mode - Poki requirement)
+            let hs = 0;
+            try { hs = localStorage.getItem('td_highscore') || 0; } catch(e) {}
             if (score > hs) {
-                localStorage.setItem('td_highscore', score);
+                try { localStorage.setItem('td_highscore', score); } catch(e) {}
                 ctx.fillStyle = '#ffdd44';
                 ctx.font = `bold ${Math.floor(TILE * 0.32)}px sans-serif`;
                 ctx.fillText('🏆 새 최고 점수!', W / 2, H * 0.5);
@@ -2032,14 +2106,45 @@ function draw() {
         }
 
         if (got > 2.0) {
-            ctx.fillStyle = '#88ccff';
-            ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            const blink = Math.sin(Date.now() / 400) * 0.3 + 0.7;
-            ctx.globalAlpha = blink;
-            ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, H * 0.58);
-            ctx.globalAlpha = 1;
+            // 보상형 광고 부활 버튼
+            if (showRewardedAdOption) {
+                const rbw = TILE * 5;
+                const rbh = TILE * 0.9;
+                const rbx = W / 2 - rbw / 2;
+                const rby = H * 0.54;
+                ctx.fillStyle = '#2a5a2a';
+                drawRoundRect(rbx, rby, rbw, rbh, 8);
+                ctx.fill();
+                ctx.strokeStyle = '#44cc44';
+                ctx.lineWidth = 2;
+                drawRoundRect(rbx, rby, rbw, rbh, 8);
+                ctx.stroke();
+                ctx.fillStyle = '#44ff44';
+                ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('🎬 광고 보고 부활 (+5 HP)', W / 2, rby + rbh / 2);
+                window._rewardedAdBtn = { x: rbx, y: rby, w: rbw, h: rbh };
+
+                // 다시 시작 버튼 (아래에)
+                ctx.fillStyle = '#88ccff';
+                ctx.font = `${Math.floor(TILE * 0.28)}px sans-serif`;
+                const blink = Math.sin(Date.now() / 400) * 0.3 + 0.7;
+                ctx.globalAlpha = blink;
+                ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, rby + rbh + TILE * 0.5);
+                ctx.globalAlpha = 1;
+                window._restartBtnY = rby + rbh + TILE * 0.2;
+            } else {
+                window._rewardedAdBtn = null;
+                ctx.fillStyle = '#88ccff';
+                ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const blink = Math.sin(Date.now() / 400) * 0.3 + 0.7;
+                ctx.globalAlpha = blink;
+                ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, H * 0.58);
+                ctx.globalAlpha = 1;
+            }
         }
     }
 }
@@ -2574,11 +2679,41 @@ function getCanvasPos(e) {
 }
 
 function handleClick(pos) {
+    // 광고 진행 중에는 입력 무시
+    if (adInProgress) return;
+
     // Init audio on first interaction (browser policy)
     soundManager.init();
 
     if (gameOver) {
-        if (gameOverTimer > 2.0) restartGame();
+        if (gameOverTimer > 2.0) {
+            // 보상형 광고 버튼 클릭 체크
+            if (showRewardedAdOption && window._rewardedAdBtn) {
+                const rb = window._rewardedAdBtn;
+                if (pos.x >= rb.x && pos.x <= rb.x + rb.w && pos.y >= rb.y && pos.y <= rb.y + rb.h) {
+                    // 보상형 광고 재생
+                    pokiRewardedBreak().then((success) => {
+                        if (success) {
+                            // 부활: 라이프 5 회복, 게임 재개
+                            gameOver = false;
+                            lives = 5;
+                            gameOverTimer = 0;
+                            showRewardedAdOption = false;
+                            rewardedAdUsed = true;
+                            pokiGameplayStart();
+                        } else {
+                            showRewardedAdOption = false;
+                        }
+                    });
+                    return;
+                }
+            }
+            // 일반 재시작: commercialBreak 후 재시작
+            pokiCommercialBreak().then(() => {
+                restartGame();
+                pokiGameplayStart();
+            });
+        }
         return;
     }
 
@@ -2728,8 +2863,14 @@ document.addEventListener('keydown', (e) => {
     if (e.key === '5') selectedTower = 4;
     if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
+        if (adInProgress) return;
         if (gameOver) {
-            restartGame();
+            if (gameOverTimer > 2.0) {
+                pokiCommercialBreak().then(() => {
+                    restartGame();
+                    pokiGameplayStart();
+                });
+            }
         } else if (betweenWaves) {
             startWave();
             autoStartTimer = 0;
@@ -2783,6 +2924,9 @@ function restartGame() {
     livesFlashTimer = 0;
     waveTransitionTimer = 0;
     gameOverTimer = 0;
+    // Poki
+    showRewardedAdOption = false;
+    rewardedAdUsed = false;
     generateGrassBlades();
     generatePathDetails();
 }
@@ -2792,6 +2936,13 @@ let lastTime = performance.now();
 function gameLoop(time) {
     const rawDt = Math.min((time - lastTime) / 1000, 0.05);
     lastTime = time;
+
+    // 광고 진행 중에는 게임 일시정지
+    if (adInProgress) {
+        requestAnimationFrame(gameLoop);
+        return;
+    }
+
     const dt = rawDt * gameSpeed;
 
     // Recalculate path on resize
