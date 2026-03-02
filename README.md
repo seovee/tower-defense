@@ -4,7 +4,7 @@
 
 ## Play
 
-[🚀 Let's Play](https://seovee.github.io/tower-defense/)
+[🚀 Let's Play](https://ubiquitous-malabi-4c51ab.netlify.app/)
 
 ## How to Play
 <img width="865" height="812" alt="스크린샷 2026-03-02 오후 8 26 32" src="https://github.com/user-attachments/assets/f1e6e6aa-68bf-4d9b-b6bc-a52554b23a67" />
