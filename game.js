@@ -1128,49 +1128,80 @@ function draw() {
     ctx.fillRect(0, uiY, W, UI_ROWS * TILE);
 
     // Top bar of UI
-    ctx.fillStyle = '#252540';
+    ctx.fillStyle = '#1a1a30';
     ctx.fillRect(0, uiY, W, TILE * 0.8);
+    // 하단 구분선
+    ctx.strokeStyle = 'rgba(100,160,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, uiY + TILE * 0.8);
+    ctx.lineTo(W, uiY + TILE * 0.8);
+    ctx.stroke();
 
-    // Stats
-    ctx.font = `bold ${Math.floor(TILE * 0.36)}px sans-serif`;
+    // Stats — 개별 뱃지 컨테이너
     ctx.textBaseline = 'middle';
-    const statY = uiY + TILE * 0.4;
+    const barH = TILE * 0.8;
+    const badgePad = 4;
+    const badgeH = barH - badgePad * 2;
+    const badgeR = 4;
+    const fontSize = Math.floor(TILE * 0.32);
+    const iconSize = Math.floor(TILE * 0.3);
+    const statY = uiY + barH / 2;
 
-    // Wave
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#88ccff';
-    ctx.fillText(`웨이브: ${wave}`, 8, statY);
+    const stats = [
+        { icon: '🌊', label: `${wave}`, color: '#88ccff', bg: 'rgba(80,140,220,0.15)', border: 'rgba(80,140,220,0.35)' },
+        { icon: '💰', label: `${gold}`, color: '#ffdd44', bg: 'rgba(220,180,40,0.15)', border: 'rgba(220,180,40,0.35)' },
+        { icon: '❤️', label: `${lives}`, color: '#ff6666', bg: 'rgba(220,70,70,0.15)', border: 'rgba(220,70,70,0.35)' },
+        { icon: '⭐', label: `${score}`, color: '#aaaadd', bg: 'rgba(150,150,200,0.15)', border: 'rgba(150,150,200,0.3)' },
+    ];
 
-    // Gold
-    ctx.fillStyle = '#ffdd44';
-    const goldX = W * 0.28;
-    ctx.fillText(`골드: ${gold}`, goldX, statY);
+    // 속도 버튼 공간 확보
+    const speedReserved = TILE * 1.9 + 10;
+    const availStatW = W - speedReserved - 8;
+    const gap = 5;
+    const badgeW = Math.floor((availStatW - gap * (stats.length - 1)) / stats.length);
+    let bx = 6;
 
-    // Lives
-    ctx.fillStyle = '#ff6666';
-    const livesX = W * 0.55;
-    ctx.fillText(`생명: ${lives}`, livesX, statY);
+    for (const st of stats) {
+        // 뱃지 배경
+        drawRoundRect(bx, uiY + badgePad, badgeW, badgeH, badgeR);
+        ctx.fillStyle = st.bg;
+        ctx.fill();
+        ctx.strokeStyle = st.border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
 
-    // Score
-    ctx.fillStyle = '#aaaacc';
-    const scoreX = W * 0.78;
-    ctx.fillText(`점수: ${score}`, scoreX, statY);
+        // 아이콘
+        ctx.font = `${iconSize}px sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(st.icon, bx + 5, statY + 1);
 
-    // Speed indicator (right side of top bar)
-    const speedBtnW = TILE * 1.2;
-    const speedBtnH = TILE * 0.5;
+        // 값
+        ctx.font = `bold ${fontSize}px sans-serif`;
+        ctx.fillStyle = st.color;
+        ctx.textAlign = 'center';
+        ctx.fillText(st.label, bx + badgeW / 2 + iconSize * 0.35, statY);
+
+        bx += badgeW + gap;
+    }
+
+    // Speed button (right side of top bar)
+    const speedBtnW = TILE * 1.8;
+    const speedBtnH = TILE * 0.65;
     const speedBtnX = W - speedBtnW - 6;
     const speedBtnY = uiY + (TILE * 0.8 - speedBtnH) / 2;
-    drawRoundRect(speedBtnX, speedBtnY, speedBtnW, speedBtnH, 4);
-    ctx.fillStyle = gameSpeed === 1 ? '#2a2a40' : gameSpeed === 2 ? '#2a3a2a' : '#4a2a2a';
+    drawRoundRect(speedBtnX, speedBtnY, speedBtnW, speedBtnH, 5);
+    ctx.fillStyle = gameSpeed === 1 ? '#1e1e35' : gameSpeed === 2 ? '#1e2e1e' : '#3a1a1a';
     ctx.fill();
-    ctx.strokeStyle = gameSpeed === 1 ? '#666' : gameSpeed === 2 ? '#88cc44' : '#ff6644';
+    ctx.strokeStyle = gameSpeed === 1 ? '#556' : gameSpeed === 2 ? '#88cc44' : '#ff6644';
     ctx.lineWidth = 1.5;
     ctx.stroke();
-    ctx.fillStyle = gameSpeed === 1 ? '#aaa' : gameSpeed === 2 ? '#88ff44' : '#ff6644';
+    const speedLabels = ['▶ 보통', '▶▶ 빠르게', '▶▶▶ 최대'];
+    const speedLabel = speedLabels[gameSpeed - 1];
+    ctx.fillStyle = gameSpeed === 1 ? '#aab' : gameSpeed === 2 ? '#88ff44' : '#ff6644';
     ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(`x${gameSpeed} [Q]`, speedBtnX + speedBtnW / 2, speedBtnY + speedBtnH * 0.5 + 1);
+    ctx.fillText(isMobile ? speedLabel : `${speedLabel} [Q]`, speedBtnX + speedBtnW / 2, speedBtnY + speedBtnH * 0.5 + 1);
     // Store for click detection
     window._speedBtn = { x: speedBtnX, y: speedBtnY, w: speedBtnW, h: speedBtnH };
 
