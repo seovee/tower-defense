@@ -81,18 +81,27 @@ const TOTAL_ROWS = ROWS + UI_ROWS;
 
 let TILE, W, H;
 let isMobile = false;
+let showRotateOverlay = false;
 
 const MIN_TILE = 36;
 const MAX_TILE = 56;
 
 function resize() {
-    // 사용 가능한 화면 크기 계산 (여백 제외)
-    const availW = window.innerWidth - 16;
-    const availH = window.innerHeight - 60;
+    const isTouchDevice = 'ontouchstart' in window;
+    const shortSide = Math.min(window.innerWidth, window.innerHeight);
+    const isPortrait = window.innerHeight > window.innerWidth;
+    const isLandscapeMobile = isTouchDevice && !isPortrait && shortSide <= 500;
 
-    // 내부 해상도용 TILE 계산 (MIN_TILE ~ MAX_TILE 범위)
+    // 사용 가능한 화면 크기 계산 (모바일 가로: 여백 최소화)
+    const marginW = isLandscapeMobile ? 4 : 16;
+    const marginH = isLandscapeMobile ? 8 : 60;
+    const availW = window.innerWidth - marginW;
+    const availH = window.innerHeight - marginH;
+
+    // 내부 해상도용 TILE 계산 (작은 화면에서 MIN_TILE 하향)
+    const effectiveMinTile = (isTouchDevice && shortSide <= 500) ? 28 : MIN_TILE;
     TILE = Math.floor(Math.min(availW / COLS, availH / TOTAL_ROWS));
-    TILE = Math.max(MIN_TILE, Math.min(MAX_TILE, TILE));
+    TILE = Math.max(effectiveMinTile, Math.min(MAX_TILE, TILE));
 
     W = COLS * TILE;
     H = TOTAL_ROWS * TILE;
@@ -111,6 +120,9 @@ function resize() {
     // 모바일 판별 (터치 지원 + 좁은 화면)
     isMobile = ('ontouchstart' in window) && (window.innerWidth <= 768 || window.innerHeight <= 500);
 
+    // 세로 모드 감지 → "화면을 돌려주세요" 오버레이
+    showRotateOverlay = isTouchDevice && shortSide <= 500 && isPortrait;
+
     // Recalculate tower positions based on new TILE
     try {
         for (const t of towers) {
@@ -121,6 +133,8 @@ function resize() {
 }
 resize();
 window.addEventListener('resize', () => { resize(); });
+if (screen.orientation) screen.orientation.addEventListener('change', resize);
+window.addEventListener('orientationchange', resize);
 
 // ---- Game State ----
 let gold = 150;
@@ -166,6 +180,87 @@ let waveTransitionNum = 0;
 let gameOverTimer = 0;
 let mousePos = { x: -1, y: -1 };
 let soundMuted = false;
+
+// ---- v2.1 New State ----
+let chainLightnings = [];
+let lang = (navigator.language || 'ko').startsWith('ko') ? 'ko' : 'en';
+
+// ---- Localization ----
+const L = {
+    ko: {
+        towerNames: ['화살탑', '대포탑', '냉기탑', '번개탑', '독타워'],
+        towerShort: ['화살', '대포', '냉기', '번개', '독'],
+        towerDesc: ['빠른 공격, 치명타', '범위 공격', '감속 효과', '장거리 연쇄', '지속 독 피해'],
+        waveClear: (w, g) => `웨이브 ${w} 클리어! +${g}G`,
+        waveNum: (w) => `웨이브 ${w}`,
+        bossAppear: (w) => `웨이브 ${w} - 보스 출현!`,
+        nextWave: (s) => `다음 웨이브: ${s}초`,
+        startPrompt: '스페이스바 / 탭으로 시작',
+        startPromptMobile: '탭으로 시작',
+        skipPrompt: '스페이스바 / 탭으로 스킵',
+        skipPromptMobile: '탭으로 스킵',
+        restart: '클릭하여 다시 시작',
+        restartMobile: '탭하여 다시 시작',
+        restartBtn: '다시 시작',
+        gameOver: 'GAME OVER',
+        waveScore: (w, s) => `웨이브: ${w}  점수: ${s}`,
+        newHighScore: '🏆 새 최고 점수!',
+        highScore: (s) => `최고 점수: ${s}`,
+        reviveAd: '🎬 광고 보고 부활 (+5 HP)',
+        speedLabels: ['▶ 보통', '▶▶ 빠르게', '▶▶▶ 최대'],
+        upgrade: (cost) => `업그레이드 ${cost}G`,
+        sell: (val) => `판매 ${val}G`,
+        maxLevel: 'MAX LEVEL',
+        atk: '공격력',
+        range: '사거리',
+        atkSpeed: '공격속도',
+        totalDmg: '총 데미지',
+        shieldBreak: '방어막 파괴!',
+        summon: '소환!',
+        speedBurst: '가속!',
+        crit: '치명타!',
+        bossWarn: '⚠ BOSS WAVE ⚠',
+        rotatePlease: '화면을 가로로 돌려주세요',
+        langLabel: '한/EN',
+    },
+    en: {
+        towerNames: ['Arrow', 'Cannon', 'Ice', 'Lightning', 'Poison'],
+        towerShort: ['Arrow', 'Cannon', 'Ice', 'Zap', 'Toxic'],
+        towerDesc: ['Fast, Critical', 'Splash', 'Slow 50%', 'Long Chain', 'DOT Poison'],
+        waveClear: (w, g) => `Wave ${w} Clear! +${g}G`,
+        waveNum: (w) => `Wave ${w}`,
+        bossAppear: (w) => `Wave ${w} - Boss Incoming!`,
+        nextWave: (s) => `Next Wave: ${s}s`,
+        startPrompt: 'Space / Tap to Start',
+        startPromptMobile: 'Tap to Start',
+        skipPrompt: 'Space / Tap to Skip',
+        skipPromptMobile: 'Tap to Skip',
+        restart: 'Click to Restart',
+        restartMobile: 'Tap to Restart',
+        restartBtn: 'Restart',
+        gameOver: 'GAME OVER',
+        waveScore: (w, s) => `Wave: ${w}  Score: ${s}`,
+        newHighScore: '🏆 New High Score!',
+        highScore: (s) => `High Score: ${s}`,
+        reviveAd: '🎬 Watch Ad to Revive (+5 HP)',
+        speedLabels: ['▶ Normal', '▶▶ Fast', '▶▶▶ Max'],
+        upgrade: (cost) => `Upgrade ${cost}G`,
+        sell: (val) => `Sell ${val}G`,
+        maxLevel: 'MAX LEVEL',
+        atk: 'ATK',
+        range: 'Range',
+        atkSpeed: 'Rate',
+        totalDmg: 'Total DMG',
+        shieldBreak: 'Shield Down!',
+        summon: 'Summon!',
+        speedBurst: 'Rush!',
+        crit: 'CRIT!',
+        bossWarn: '⚠ BOSS WAVE ⚠',
+        rotatePlease: 'Please rotate to landscape',
+        langLabel: '한/EN',
+    },
+};
+function txt() { return L[lang]; }
 
 // ---- SoundManager (Web Audio API — Procedural 8-bit Sound) ----
 class SoundManager {
@@ -341,6 +436,34 @@ class SoundManager {
             o.stop(t + 0.2 * (i + 1) + 0.16);
         });
     }
+    arrowCrit() {
+        if (!this.canPlay('acrit')) return;
+        const { o, g, t } = this.osc('square', 1200, 0.12, 0.15);
+        o.frequency.exponentialRampToValueAtTime(600, t + 0.12);
+        this.osc('sine', 1800, 0.08, 0.1);
+    }
+    lightningChain() {
+        if (!this.canPlay('lchain')) return;
+        this.noise(0.08, 0.08);
+        const { o, g, t } = this.osc('sawtooth', 800, 0.12, 0.08);
+        o.frequency.exponentialRampToValueAtTime(200, t + 0.12);
+    }
+    bossShield() {
+        if (!this.canPlay('bshield')) return;
+        this.osc('sine', 600, 0.2, 0.12);
+        this.osc('sine', 900, 0.15, 0.08);
+    }
+    bossSummon() {
+        if (!this.canPlay('bsummon')) return;
+        const { o, g, t } = this.osc('sawtooth', 100, 0.3, 0.12);
+        o.frequency.exponentialRampToValueAtTime(300, t + 0.3);
+        this.noise(0.2, 0.06);
+    }
+    bossSpeedBurst() {
+        if (!this.canPlay('bburst')) return;
+        const { o, g, t } = this.osc('square', 300, 0.15, 0.1);
+        o.frequency.exponentialRampToValueAtTime(900, t + 0.15);
+    }
     uiClick() {
         if (!this.canPlay('uiclick')) return;
         this.osc('sine', 800, 0.03, 0.06);
@@ -496,8 +619,7 @@ generatePathDetails();
 // ---- Tower Types ----
 const TOWER_TYPES = [
     {
-        name: '화살탑',
-        shortName: '화살',
+        nameKey: 0,
         cost: 50,
         damage: 8,
         range: 3,
@@ -509,12 +631,12 @@ const TOWER_TYPES = [
         splash: 0,
         slow: 0,
         poison: 0,
-        desc: '빠른 공격',
+        critChance: 0.2,
+        critMult: 2.5,
         icon: 'arrow',
     },
     {
-        name: '대포탑',
-        shortName: '대포',
+        nameKey: 1,
         cost: 100,
         damage: 30,
         range: 2.8,
@@ -526,12 +648,10 @@ const TOWER_TYPES = [
         splash: 1.2,
         slow: 0,
         poison: 0,
-        desc: '범위 공격',
         icon: 'cannon',
     },
     {
-        name: '냉기탑',
-        shortName: '냉기',
+        nameKey: 2,
         cost: 75,
         damage: 5,
         range: 2.5,
@@ -543,12 +663,10 @@ const TOWER_TYPES = [
         splash: 0.6,
         slow: 0.5,
         poison: 0,
-        desc: '감속 효과',
         icon: 'ice',
     },
     {
-        name: '번개탑',
-        shortName: '번개',
+        nameKey: 3,
         cost: 130,
         damage: 18,
         range: 3.5,
@@ -560,12 +678,13 @@ const TOWER_TYPES = [
         splash: 0,
         slow: 0,
         poison: 0,
-        desc: '장거리',
+        chain: 3,
+        chainRange: 2.5,
+        chainDecay: 0.7,
         icon: 'lightning',
     },
     {
-        name: '독타워',
-        shortName: '독',
+        nameKey: 4,
         cost: 90,
         damage: 4,
         range: 2.5,
@@ -579,7 +698,6 @@ const TOWER_TYPES = [
         poison: 1,
         poisonDmg: 5,
         poisonDur: 4,
-        desc: '지속 독 피해',
         icon: 'poison',
     },
 ];
@@ -633,6 +751,14 @@ class Enemy {
         this.size = Math.min(TILE * 0.35, 10 + hp * 0.02);
         this.hitFlash = 0;
         this.armor = 0;
+        // Boss abilities
+        this.shield = 0;
+        this.maxShield = 0;
+        this.shieldCooldown = 0;
+        this.summonCooldown = 0;
+        this.speedBurstTimer = 0;
+        this.speedBurstCooldown = 0;
+        this.speedBurstActive = false;
     }
 }
 
@@ -654,6 +780,8 @@ class Projectile {
         this.color = tower.type.projColor;
         this.alive = true;
         this.trail = [];
+        // Arrow crit
+        this.isCrit = tower.typeIndex === 0 && Math.random() < (tower.type.critChance || 0);
     }
 }
 
@@ -717,10 +845,10 @@ function triggerScreenShake(intensity, duration) {
 // ---- Wave definitions ----
 function getWaveEnemies(waveNum) {
     const enemies = [];
-    const baseHp = 30 + waveNum * 15 + Math.pow(waveNum, 1.5) * 5;
-    const count = 5 + Math.floor(waveNum * 1.5);
-    const speed = 1.0 + waveNum * 0.03;
-    const goldBase = 5 + Math.floor(waveNum * 0.5);
+    const baseHp = 30 + waveNum * 18 + Math.pow(waveNum, 1.7) * 6;
+    const count = 5 + Math.floor(waveNum * 1.8) + Math.floor(waveNum / 8) * 3;
+    const speed = 1.0 + waveNum * 0.04 + Math.floor(waveNum / 10) * 0.05;
+    const goldBase = 5 + Math.floor(waveNum * 0.6);
 
     for (let i = 0; i < count; i++) {
         enemies.push({
@@ -731,22 +859,24 @@ function getWaveEnemies(waveNum) {
         });
     }
 
-    // Add fast enemies starting wave 3
-    if (waveNum >= 3) {
-        const fastCount = Math.floor(waveNum * 0.5);
+    // Add fast enemies starting wave 2
+    if (waveNum >= 2) {
+        const fastCount = Math.floor(waveNum * 0.6);
         for (let i = 0; i < fastCount; i++) {
+            const fastArmor = waveNum >= 18 ? 2 : waveNum >= 10 ? 1 : 0;
             enemies.push({
                 hp: Math.floor(baseHp * 0.5),
                 speed: speed * 1.6,
                 gold: goldBase + 2,
-                type: 'fast'
+                type: 'fast',
+                fastArmor: fastArmor,
             });
         }
     }
 
-    // Add tank enemies starting wave 5
-    if (waveNum >= 5) {
-        const tankCount = Math.max(1, Math.floor(waveNum * 0.3));
+    // Add tank enemies starting wave 4
+    if (waveNum >= 4) {
+        const tankCount = Math.max(1, Math.floor(waveNum * 0.35));
         for (let i = 0; i < tankCount; i++) {
             enemies.push({
                 hp: Math.floor(baseHp * 2.5),
@@ -886,6 +1016,22 @@ function spawnDeathParticles(enemy) {
     }
 }
 
+// ---- Damage helper (shield absorption) ----
+function applyDamageToEnemy(enemy, dmg) {
+    if (enemy.shield > 0) {
+        enemy.shield -= dmg;
+        if (enemy.shield <= 0) {
+            enemy.hp += enemy.shield; // overflow damage (shield is negative)
+            enemy.shield = 0;
+            enemy.shieldCooldown = 12 + Math.random() * 5;
+            floatingTexts.push(new FloatingText(enemy.x, enemy.y - 20, txt().shieldBreak, '#88ccff'));
+            soundManager.bossShield();
+        }
+    } else {
+        enemy.hp -= dmg;
+    }
+}
+
 // ---- Update logic ----
 function update(dt) {
     if (gameOver) return;
@@ -919,9 +1065,15 @@ function update(dt) {
             if (data.type === 'boss') {
                 e.size = Math.min(TILE * 0.48, TILE * 0.48);
                 e.armor = 3;
+                // Boss abilities
+                e.maxShield = Math.floor(e.maxHp * 0.15);
+                e.shieldCooldown = 5 + Math.random() * 3;
+                e.summonCooldown = 8 + Math.random() * 4;
+                e.speedBurstCooldown = 12 + Math.random() * 5;
             }
             if (data.type === 'fast') {
                 e.size *= 0.8;
+                if (data.fastArmor) e.armor = data.fastArmor;
             }
             enemies.push(e);
             spawnTimer = 0.5 + Math.random() * 0.3;
@@ -936,7 +1088,7 @@ function update(dt) {
         // Wave clear bonus
         const bonus = 10 + wave * 5;
         gold += bonus;
-        floatingTexts.push(new FloatingText(W / 2, TILE * 2, `웨이브 ${wave} 클리어! +${bonus}G`, '#88ccff'));
+        floatingTexts.push(new FloatingText(W / 2, TILE * 2, txt().waveClear(wave, bonus), '#88ccff'));
     }
 
     // Update enemies
@@ -958,7 +1110,7 @@ function update(dt) {
             if (enemy.poisonTick <= 0) {
                 enemy.poisonTick = 0.5;
                 const pdmg = Math.max(1, enemy.poisonDmg - (enemy.armor || 0));
-                enemy.hp -= pdmg;
+                applyDamageToEnemy(enemy, pdmg);
                 // Poison drip particles
                 particles.push(new Particle(
                     enemy.x + (Math.random() - 0.5) * enemy.size,
@@ -992,6 +1144,59 @@ function update(dt) {
             } else {
                 enemy.x += (dx / d) * moveSpeed;
                 enemy.y += (dy / d) * moveSpeed;
+            }
+        }
+
+        // Boss abilities
+        if (enemy.type === 'boss' && enemy.alive) {
+            // Shield
+            if (enemy.shield <= 0 && enemy.shieldCooldown > 0) {
+                enemy.shieldCooldown -= dt;
+                if (enemy.shieldCooldown <= 0) {
+                    enemy.shield = enemy.maxShield;
+                    soundManager.bossShield();
+                }
+            }
+            // Summon
+            if (enemy.summonCooldown > 0) {
+                enemy.summonCooldown -= dt;
+                if (enemy.summonCooldown <= 0 && enemies.length < 100) {
+                    const summonCount = 2 + Math.floor(Math.random() * 3);
+                    for (let si = 0; si < summonCount; si++) {
+                        const minion = new Enemy(
+                            Math.floor(enemy.maxHp * 0.03),
+                            enemy.baseSpeed * 1.4,
+                            Math.floor(enemy.goldValue * 0.1),
+                            'fast'
+                        );
+                        minion.pathIndex = enemy.pathIndex;
+                        minion.x = enemy.x + (Math.random() - 0.5) * TILE;
+                        minion.y = enemy.y + (Math.random() - 0.5) * TILE;
+                        minion.size *= 0.7;
+                        enemies.push(minion);
+                    }
+                    floatingTexts.push(new FloatingText(enemy.x, enemy.y - 25, txt().summon, '#ff8844'));
+                    soundManager.bossSummon();
+                    enemy.summonCooldown = 10 + Math.random() * 5;
+                }
+            }
+            // Speed Burst
+            if (!enemy.speedBurstActive && enemy.speedBurstCooldown > 0) {
+                enemy.speedBurstCooldown -= dt;
+                if (enemy.speedBurstCooldown <= 0) {
+                    enemy.speedBurstActive = true;
+                    enemy.speedBurstTimer = 2;
+                    floatingTexts.push(new FloatingText(enemy.x, enemy.y - 25, txt().speedBurst, '#ff4444'));
+                    soundManager.bossSpeedBurst();
+                }
+            }
+            if (enemy.speedBurstActive) {
+                enemy.speedBurstTimer -= dt;
+                enemy.speed = enemy.baseSpeed * 2.5;
+                if (enemy.speedBurstTimer <= 0) {
+                    enemy.speedBurstActive = false;
+                    enemy.speedBurstCooldown = 12 + Math.random() * 5;
+                }
             }
         }
 
@@ -1080,11 +1285,24 @@ function update(dt) {
             // Hit
             proj.alive = false;
 
-            // Apply damage
-            const dmg = Math.max(1, proj.damage - (proj.target.armor || 0));
-            proj.target.hp -= dmg;
+            // Apply damage (with crit)
+            let baseDmg = proj.damage;
+            if (proj.isCrit) baseDmg = Math.floor(baseDmg * (TOWER_TYPES[0].critMult || 1));
+            const dmg = Math.max(1, baseDmg - (proj.target.armor || 0));
+            applyDamageToEnemy(proj.target, dmg);
             proj.target.hitFlash = 1;
             proj.tower.totalDamage += dmg;
+
+            // Crit effects
+            if (proj.isCrit) {
+                floatingTexts.push(new FloatingText(proj.target.x, proj.target.y - 25, txt().crit, '#ffdd44'));
+                soundManager.arrowCrit();
+                for (let ci = 0; ci < 8; ci++) {
+                    const ca = Math.random() * Math.PI * 2;
+                    particles.push(new Particle(proj.target.x, proj.target.y, '#ffdd44',
+                        Math.cos(ca) * 2.5, Math.sin(ca) * 2.5, 0.5, 3));
+                }
+            }
 
             // Slow
             if (proj.slow > 0) {
@@ -1105,7 +1323,7 @@ function update(dt) {
                     if (!enemy.alive || enemy === proj.target) continue;
                     if (dist(proj, enemy) <= proj.splash) {
                         const splashDmg = Math.max(1, Math.floor(proj.damage * 0.5) - (enemy.armor || 0));
-                        enemy.hp -= splashDmg;
+                        applyDamageToEnemy(enemy, splashDmg);
                         enemy.hitFlash = 1;
                         if (proj.slow > 0) {
                             enemy.slowTimer = 1.5;
@@ -1142,6 +1360,55 @@ function update(dt) {
                 groundMarks.push(new GroundMark(proj.x, proj.y, 3 + Math.random() * 4, markColors[Math.floor(Math.random() * markColors.length)]));
             }
 
+
+            // Chain lightning
+            if (proj.towerTypeIndex === 3 && proj.target.alive) {
+                const chainType = TOWER_TYPES[3];
+                const chainRange = chainType.chainRange * TILE;
+                let chainDamage = proj.damage * chainType.chainDecay;
+                let lastTarget = proj.target;
+                const hitTargets = new Set([proj.target]);
+
+                for (let bounce = 0; bounce < chainType.chain; bounce++) {
+                    let nearest = null;
+                    let nearestDist = Infinity;
+                    for (const ce of enemies) {
+                        if (!ce.alive || hitTargets.has(ce)) continue;
+                        const cd = dist(lastTarget, ce);
+                        if (cd <= chainRange && cd < nearestDist) {
+                            nearest = ce;
+                            nearestDist = cd;
+                        }
+                    }
+                    if (!nearest) break;
+
+                    const chainHitDmg = Math.max(1, Math.floor(chainDamage) - (nearest.armor || 0));
+                    applyDamageToEnemy(nearest, chainHitDmg);
+                    nearest.hitFlash = 1;
+                    hitTargets.add(nearest);
+
+                    if (chainLightnings.length < 10) {
+                        chainLightnings.push({
+                            x1: lastTarget.x, y1: lastTarget.y,
+                            x2: nearest.x, y2: nearest.y,
+                            life: 0.25
+                        });
+                    }
+
+                    if (nearest.hp <= 0 && nearest.alive) {
+                        nearest.alive = false;
+                        gold += nearest.goldValue;
+                        score += nearest.goldValue * 2;
+                        spawnDeathParticles(nearest);
+                        floatingTexts.push(new FloatingText(nearest.x, nearest.y - 15, `+${nearest.goldValue}G`, '#ffdd44'));
+                        soundManager.enemyDeath();
+                    }
+
+                    lastTarget = nearest;
+                    chainDamage *= chainType.chainDecay;
+                }
+                soundManager.lightningChain();
+            }
 
             // Check enemy death
             if (proj.target.hp <= 0 && proj.target.alive) {
@@ -1219,6 +1486,12 @@ function update(dt) {
         gm.life -= dt / gameSpeed;
     }
     groundMarks = groundMarks.filter(gm => gm.life > 0);
+
+    // Update chain lightnings
+    for (const cl of chainLightnings) {
+        cl.life -= dt / gameSpeed;
+    }
+    chainLightnings = chainLightnings.filter(cl => cl.life > 0);
 
     // Update muzzle flash
     for (const tower of towers) {
@@ -1485,14 +1758,23 @@ function draw() {
                 ctx.stroke();
                 ctx.globalAlpha = 1;
             }
-            // Arrow head with glow
+            // Arrow head with glow (crit = gold, bigger)
             ctx.save();
-            ctx.shadowColor = '#bbff55';
-            ctx.shadowBlur = 6;
-            ctx.fillStyle = '#eeff88';
-            ctx.beginPath();
-            ctx.arc(proj.x, proj.y, 2.5, 0, Math.PI * 2);
-            ctx.fill();
+            if (proj.isCrit) {
+                ctx.shadowColor = '#ffdd44';
+                ctx.shadowBlur = 12;
+                ctx.fillStyle = '#ffee66';
+                ctx.beginPath();
+                ctx.arc(proj.x, proj.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.shadowColor = '#bbff55';
+                ctx.shadowBlur = 6;
+                ctx.fillStyle = '#eeff88';
+                ctx.beginPath();
+                ctx.arc(proj.x, proj.y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
             ctx.restore();
 
         } else if (ti === 1) {
@@ -1672,6 +1954,43 @@ function draw() {
     }
     ctx.globalAlpha = 1;
 
+    // Draw chain lightnings
+    for (const cl of chainLightnings) {
+        const clAlpha = cl.life / 0.25;
+        ctx.globalAlpha = clAlpha * 0.8;
+        const cdx = cl.x2 - cl.x1;
+        const cdy = cl.y2 - cl.y1;
+        // Main bolt
+        ctx.strokeStyle = '#ffff44';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cl.x1, cl.y1);
+        for (let si = 1; si < 5; si++) {
+            const st = si / 5;
+            ctx.lineTo(
+                cl.x1 + cdx * st + (Math.random() - 0.5) * 10,
+                cl.y1 + cdy * st + (Math.random() - 0.5) * 10
+            );
+        }
+        ctx.lineTo(cl.x2, cl.y2);
+        ctx.stroke();
+        // Secondary bolt
+        ctx.strokeStyle = '#ffffaa';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cl.x1, cl.y1);
+        for (let si = 1; si < 5; si++) {
+            const st = si / 5;
+            ctx.lineTo(
+                cl.x1 + cdx * st + (Math.random() - 0.5) * 14,
+                cl.y1 + cdy * st + (Math.random() - 0.5) * 14
+            );
+        }
+        ctx.lineTo(cl.x2, cl.y2);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
     // Draw ambient particles
     for (const ap of ambientParticles) {
         const alpha = Math.min(1, ap.life / ap.maxLife) * 0.6;
@@ -1730,7 +2049,7 @@ function draw() {
         ctx.font = `bold ${Math.floor(TILE * 0.6)}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`웨이브 ${waveTransitionNum}`, textX, ROWS * TILE * 0.45);
+        ctx.fillText(txt().waveNum(waveTransitionNum), textX, ROWS * TILE * 0.45);
         ctx.globalAlpha = 1;
     }
 
@@ -1776,9 +2095,13 @@ function draw() {
         { icon: '⭐', label: `${score}`, color: '#aaaadd', bg: 'rgba(150,150,200,0.15)', border: 'rgba(150,150,200,0.3)' },
     ];
 
-    // 속도 버튼 공간 확보
-    const speedReserved = TILE * 1.9 + 10;
-    const availStatW = W - speedReserved - 8;
+    // 오른쪽 버튼 3개 총 너비 미리 계산하여 뱃지 영역 확보
+    const _speedBtnW = Math.floor(TILE * 1.5);
+    const _volBtnW = Math.floor(TILE * 0.75);
+    const _langBtnW = Math.floor(TILE * 0.9);
+    const _btnGap = Math.max(6, Math.floor(TILE * 0.15));
+    const rightBtnsW = _speedBtnW + _volBtnW + _langBtnW + _btnGap * 4;
+    const availStatW = W - rightBtnsW - 12;
     const gap = 5;
     const badgeW = Math.floor((availStatW - gap * (stats.length - 1)) / stats.length);
     let bx = 6;
@@ -1823,12 +2146,42 @@ function draw() {
         bx += badgeW + gap;
     }
 
-    // Volume button
-    const volBtnW = TILE * 0.7;
-    const volBtnH = TILE * 0.65;
-    const volBtnX = W - TILE * 1.8 - 6 - volBtnW - 6;
-    const volBtnY = uiY + (TILE * 0.8 - volBtnH) / 2;
-    drawRoundRect(volBtnX, volBtnY, volBtnW, volBtnH, 5);
+    // ---- Right-side buttons (Speed / Volume / Language) ----
+    // 고정 너비 + 균일 간격으로 오른쪽→왼쪽 배치
+    const btnGap = Math.max(6, Math.floor(TILE * 0.15));
+    const btnH = Math.floor(TILE * 0.65);
+    const btnY = uiY + Math.floor((TILE * 0.8 - btnH) / 2);
+    const speedBtnW = Math.floor(TILE * 1.5);
+    const volBtnW = Math.floor(TILE * 0.75);
+    const langBtnW = Math.floor(TILE * 0.9);
+    let btnRight = W - btnGap; // 오른쪽 시작점
+
+    // Speed button (가장 오른쪽) — 고정 너비, [Q] 제거
+    const speedLabels = txt().speedLabels;
+    const speedLabel = speedLabels[gameSpeed - 1];
+    const speedBtnX = btnRight - speedBtnW;
+    drawRoundRect(speedBtnX, btnY, speedBtnW, btnH, 5);
+    ctx.fillStyle = gameSpeed === 1 ? '#1e1e35' : gameSpeed === 2 ? '#1e2e1e' : '#3a1a1a';
+    ctx.fill();
+    ctx.strokeStyle = gameSpeed === 1 ? '#556' : gameSpeed === 2 ? '#88cc44' : '#ff6644';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = gameSpeed === 1 ? '#aab' : gameSpeed === 2 ? '#88ff44' : '#ff6644';
+    ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(speedLabel, speedBtnX + speedBtnW / 2, btnY + btnH * 0.5 + 1);
+    window._speedBtn = { x: speedBtnX, y: btnY, w: speedBtnW, h: btnH };
+    // [Q] 힌트를 버튼 아래 별도 텍스트로 (데스크톱만)
+    if (!isMobile) {
+        ctx.font = `${Math.floor(TILE * 0.18)}px sans-serif`;
+        ctx.fillStyle = '#667';
+        ctx.fillText('[Q]', speedBtnX + speedBtnW / 2, btnY + btnH + Math.floor(TILE * 0.15));
+    }
+    btnRight = speedBtnX - btnGap;
+
+    // Volume button — 고정 너비
+    const volBtnX = btnRight - volBtnW;
+    drawRoundRect(volBtnX, btnY, volBtnW, btnH, 5);
     ctx.fillStyle = soundMuted ? '#3a1a1a' : '#1e1e35';
     ctx.fill();
     ctx.strokeStyle = soundMuted ? '#cc4444' : '#556';
@@ -1837,28 +2190,23 @@ function draw() {
     ctx.fillStyle = soundMuted ? '#ff6644' : '#aab';
     ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(soundMuted ? '🔇' : '🔊', volBtnX + volBtnW / 2, volBtnY + volBtnH * 0.5 + 1);
-    window._volBtn = { x: volBtnX, y: volBtnY, w: volBtnW, h: volBtnH };
+    ctx.fillText(soundMuted ? '🔇' : '🔊', volBtnX + volBtnW / 2, btnY + btnH * 0.5 + 1);
+    window._volBtn = { x: volBtnX, y: btnY, w: volBtnW, h: btnH };
+    btnRight = volBtnX - btnGap;
 
-    // Speed button (right side of top bar)
-    const speedBtnW = TILE * 1.8;
-    const speedBtnH = TILE * 0.65;
-    const speedBtnX = W - speedBtnW - 6;
-    const speedBtnY = uiY + (TILE * 0.8 - speedBtnH) / 2;
-    drawRoundRect(speedBtnX, speedBtnY, speedBtnW, speedBtnH, 5);
-    ctx.fillStyle = gameSpeed === 1 ? '#1e1e35' : gameSpeed === 2 ? '#1e2e1e' : '#3a1a1a';
+    // Language button — 고정 너비
+    const langBtnX = btnRight - langBtnW;
+    drawRoundRect(langBtnX, btnY, langBtnW, btnH, 5);
+    ctx.fillStyle = '#1e1e35';
     ctx.fill();
-    ctx.strokeStyle = gameSpeed === 1 ? '#556' : gameSpeed === 2 ? '#88cc44' : '#ff6644';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#556';
+    ctx.lineWidth = 1;
     ctx.stroke();
-    const speedLabels = ['▶ 보통', '▶▶ 빠르게', '▶▶▶ 최대'];
-    const speedLabel = speedLabels[gameSpeed - 1];
-    ctx.fillStyle = gameSpeed === 1 ? '#aab' : gameSpeed === 2 ? '#88ff44' : '#ff6644';
-    ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+    ctx.fillStyle = '#aab';
+    ctx.font = `bold ${Math.floor(TILE * 0.24)}px sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(isMobile ? speedLabel : `${speedLabel} [Q]`, speedBtnX + speedBtnW / 2, speedBtnY + speedBtnH * 0.5 + 1);
-    // Store for click detection
-    window._speedBtn = { x: speedBtnX, y: speedBtnY, w: speedBtnW, h: speedBtnH };
+    ctx.fillText(txt().langLabel, langBtnX + langBtnW / 2, btnY + btnH * 0.5 + 1);
+    window._langBtn = { x: langBtnX, y: btnY, w: langBtnW, h: btnH };
 
     // Boss warning overlay
     if (bossWarningTimer > 0) {
@@ -1871,17 +2219,17 @@ function draw() {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.globalAlpha = Math.min(1, bossWarningTimer / 0.5);
-        ctx.fillText('⚠ BOSS WAVE ⚠', W / 2, ROWS * TILE * 0.4);
+        ctx.fillText(txt().bossWarn, W / 2, ROWS * TILE * 0.4);
         ctx.fillStyle = '#ffcc44';
         ctx.font = `bold ${Math.floor(TILE * 0.4)}px sans-serif`;
-        ctx.fillText(`웨이브 ${wave} - 보스 출현!`, W / 2, ROWS * TILE * 0.55);
+        ctx.fillText(txt().bossAppear(wave), W / 2, ROWS * TILE * 0.55);
         ctx.globalAlpha = 1;
         ctx.textBaseline = 'alphabetic';
     }
 
     // Tower selection buttons
-    const btnY = uiY + TILE * 0.95;
-    const btnH = TILE * 1.5;
+    const tBtnY = uiY + TILE * 0.95;
+    const tBtnH = TILE * 1.5;
     const btnW = Math.floor((W - 10) / TOWER_TYPES.length) - 6;
     const btnStartX = 8;
 
@@ -1892,10 +2240,10 @@ function draw() {
         const canAfford = gold >= type.cost;
 
         // Check hover
-        const isHovered = mousePos.x >= bx && mousePos.x <= bx + btnW && mousePos.y >= btnY && mousePos.y <= btnY + btnH;
+        const isHovered = mousePos.x >= bx && mousePos.x <= bx + btnW && mousePos.y >= tBtnY && mousePos.y <= tBtnY + tBtnH;
 
         // Button background
-        drawRoundRect(bx, btnY, btnW, btnH, 6);
+        drawRoundRect(bx, tBtnY, btnW, tBtnH, 6);
         ctx.fillStyle = isSelected ? '#2a3a5a' : isHovered ? '#222244' : '#1a1a30';
         ctx.fill();
         if (isSelected) {
@@ -1914,7 +2262,7 @@ function draw() {
 
         // Tower icon
         const iconX = bx + btnW * 0.2;
-        const iconY = btnY + btnH * 0.38;
+        const iconY = tBtnY + tBtnH * 0.38;
         ctx.save();
         const iconScale = TILE * 0.015;
         drawTowerIcon(iconX, iconY, i, iconScale);
@@ -1924,24 +2272,24 @@ function draw() {
         ctx.fillStyle = canAfford ? '#ddd' : '#666';
         ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
         ctx.textAlign = 'left';
-        ctx.fillText(type.shortName, bx + btnW * 0.38, btnY + btnH * 0.3);
+        ctx.fillText(txt().towerShort[type.nameKey], bx + btnW * 0.38, tBtnY + tBtnH * 0.3);
 
         // Cost
         ctx.fillStyle = canAfford ? '#ffdd44' : '#664422';
         ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
-        ctx.fillText(`${type.cost}G`, bx + btnW * 0.38, btnY + btnH * 0.55);
+        ctx.fillText(`${type.cost}G`, bx + btnW * 0.38, tBtnY + tBtnH * 0.55);
 
         // Desc
         ctx.fillStyle = '#888';
         ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
-        ctx.fillText(type.desc, bx + btnW * 0.38, btnY + btnH * 0.78);
+        ctx.fillText(txt().towerDesc[type.nameKey], bx + btnW * 0.38, tBtnY + tBtnH * 0.78);
 
         // Keyboard hint (모바일에서는 숨김)
         if (!isMobile) {
             ctx.fillStyle = '#444466';
             ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
             ctx.textAlign = 'right';
-            ctx.fillText(`[${i + 1}]`, bx + btnW - 6, btnY + btnH * 0.85);
+            ctx.fillText(`[${i + 1}]`, bx + btnW - 6, tBtnY + tBtnH * 0.85);
         }
     }
 
@@ -1972,15 +2320,15 @@ function draw() {
         // Tower name and level
         ctx.fillStyle = t.type.color;
         ctx.font = `bold ${Math.floor(TILE * 0.35)}px sans-serif`;
-        ctx.fillText(`${t.type.name} Lv.${t.level}`, px, py);
+        ctx.fillText(`${txt().towerNames[t.type.nameKey]} Lv.${t.level}`, px, py);
         py += TILE * 0.45;
 
         // Stats
         ctx.fillStyle = '#bbb';
         ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
-        ctx.fillText(`공격력: ${t.damage}  사거리: ${t.range.toFixed(1)}`, px, py);
+        ctx.fillText(`${txt().atk}: ${t.damage}  ${txt().range}: ${t.range.toFixed(1)}`, px, py);
         py += TILE * 0.34;
-        ctx.fillText(`공격속도: ${t.fireRate.toFixed(2)}s  총 데미지: ${t.totalDamage}`, px, py);
+        ctx.fillText(`${txt().atkSpeed}: ${t.fireRate.toFixed(2)}s  ${txt().totalDmg}: ${t.totalDamage}`, px, py);
         py += TILE * 0.42;
 
         // Upgrade button
@@ -2001,7 +2349,7 @@ function draw() {
             ctx.fillStyle = canUp ? '#88ff88' : '#666';
             ctx.font = `bold ${Math.floor(TILE * 0.26)}px sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(`업그레이드 ${t.upgradeCost}G`, ubx + ubw / 2, uby + ubh * 0.25);
+            ctx.fillText(txt().upgrade(t.upgradeCost), ubx + ubw / 2, uby + ubh * 0.25);
 
             // Store button position for click detection
             t._upgradeBtn = { x: ubx, y: uby, w: ubw, h: ubh };
@@ -2009,7 +2357,7 @@ function draw() {
             ctx.fillStyle = '#ffdd44';
             ctx.font = `bold ${Math.floor(TILE * 0.28)}px sans-serif`;
             ctx.textAlign = 'left';
-            ctx.fillText('MAX LEVEL', px, py);
+            ctx.fillText(txt().maxLevel, px, py);
             t._upgradeBtn = null;
         }
 
@@ -2029,7 +2377,7 @@ function draw() {
         ctx.fillStyle = '#ff8888';
         ctx.font = `bold ${Math.floor(TILE * 0.26)}px sans-serif`;
         ctx.textAlign = 'center';
-        ctx.fillText(`판매 ${t.sellValue}G`, sbx + sbw / 2, sby + sbh * 0.25);
+        ctx.fillText(txt().sell(t.sellValue), sbx + sbw / 2, sby + sbh * 0.25);
 
         t._sellBtn = { x: sbx, y: sby, w: sbw, h: sbh };
     }
@@ -2037,8 +2385,25 @@ function draw() {
     // Wave countdown / start prompt
     if (betweenWaves && !gameOver) {
         const countdown = Math.ceil(waveCountdown);
+        // 텍스트 너비 측정 후 동적 박스 크기 결정
+        ctx.font = `bold ${Math.floor(TILE * 0.38)}px sans-serif`;
+        let promptLines;
+        if (wave === 0) {
+            promptLines = [isMobile ? txt().startPromptMobile : txt().startPrompt];
+        } else {
+            promptLines = [txt().nextWave(countdown), isMobile ? txt().skipPromptMobile : txt().skipPrompt];
+        }
+        let maxTextW = 0;
+        for (const line of promptLines) {
+            const tw = ctx.measureText(line).width;
+            if (tw > maxTextW) maxTextW = tw;
+        }
+        const boxPad = TILE * 0.5;
+        const boxW = Math.max(TILE * 4, maxTextW + boxPad * 2);
+        const boxX = W / 2 - boxW / 2;
+
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        drawRoundRect(W / 2 - 100, TILE * 0.3, 200, TILE * 1.2, 8);
+        drawRoundRect(boxX, TILE * 0.3, boxW, TILE * 1.2, 8);
         ctx.fill();
 
         ctx.fillStyle = '#88ccff';
@@ -2046,12 +2411,12 @@ function draw() {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (wave === 0) {
-            ctx.fillText(isMobile ? '탭으로 시작' : '스페이스바 / 탭으로 시작', W / 2, TILE * 0.9);
+            ctx.fillText(promptLines[0], W / 2, TILE * 0.9);
         } else {
-            ctx.fillText(`다음 웨이브: ${countdown}초`, W / 2, TILE * 0.7);
+            ctx.fillText(promptLines[0], W / 2, TILE * 0.7);
             ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
             ctx.fillStyle = '#aaa';
-            ctx.fillText(isMobile ? '탭으로 스킵' : '스페이스바 / 탭으로 스킵', W / 2, TILE * 1.15);
+            ctx.fillText(promptLines[1], W / 2, TILE * 1.15);
         }
     }
 
@@ -2075,7 +2440,7 @@ function draw() {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.globalAlpha = textT;
-            ctx.fillText('GAME OVER', 0, 0);
+            ctx.fillText(txt().gameOver, 0, 0);
             ctx.restore();
             ctx.globalAlpha = 1;
         }
@@ -2088,7 +2453,7 @@ function draw() {
             ctx.font = `${Math.floor(TILE * 0.4)}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(`웨이브: ${wave}  점수: ${displayScore}`, W / 2, H * 0.43);
+            ctx.fillText(txt().waveScore(wave, displayScore), W / 2, H * 0.43);
 
             // High score (try/catch for incognito mode - Poki requirement)
             let hs = 0;
@@ -2097,15 +2462,20 @@ function draw() {
                 try { localStorage.setItem('td_highscore', score); } catch(e) {}
                 ctx.fillStyle = '#ffdd44';
                 ctx.font = `bold ${Math.floor(TILE * 0.32)}px sans-serif`;
-                ctx.fillText('🏆 새 최고 점수!', W / 2, H * 0.5);
+                ctx.fillText(txt().newHighScore, W / 2, H * 0.5);
             } else {
                 ctx.fillStyle = '#888';
                 ctx.font = `${Math.floor(TILE * 0.28)}px sans-serif`;
-                ctx.fillText(`최고 점수: ${hs}`, W / 2, H * 0.5);
+                ctx.fillText(txt().highScore(hs), W / 2, H * 0.5);
             }
         }
 
         if (got > 2.0) {
+            // 재시작 버튼 공통 스타일 (둥근 사각형)
+            const rstBtnW = TILE * 4;
+            const rstBtnH = TILE * 0.85;
+            const rstBtnX = W / 2 - rstBtnW / 2;
+
             // 보상형 광고 부활 버튼
             if (showRewardedAdOption) {
                 const rbw = TILE * 5;
@@ -2123,29 +2493,54 @@ function draw() {
                 ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText('🎬 광고 보고 부활 (+5 HP)', W / 2, rby + rbh / 2);
+                ctx.fillText(txt().reviveAd, W / 2, rby + rbh / 2);
                 window._rewardedAdBtn = { x: rbx, y: rby, w: rbw, h: rbh };
 
-                // 다시 시작 버튼 (아래에)
+                // 다시 시작 버튼 (광고 버튼 아래, 둥근 사각형)
+                const rstBtnY = rby + rbh + TILE * 0.35;
+                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
+                ctx.fillStyle = '#1a2a4a';
+                ctx.fill();
+                ctx.strokeStyle = '#4488cc';
+                ctx.lineWidth = 2;
+                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
+                ctx.stroke();
                 ctx.fillStyle = '#88ccff';
-                ctx.font = `${Math.floor(TILE * 0.28)}px sans-serif`;
-                const blink = Math.sin(Date.now() / 400) * 0.3 + 0.7;
-                ctx.globalAlpha = blink;
-                ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, rby + rbh + TILE * 0.5);
-                ctx.globalAlpha = 1;
-                window._restartBtnY = rby + rbh + TILE * 0.2;
+                ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+                ctx.fillText(txt().restartBtn, W / 2, rstBtnY + rstBtnH / 2);
+                window._restartBtn = { x: rstBtnX, y: rstBtnY, w: rstBtnW, h: rstBtnH };
             } else {
                 window._rewardedAdBtn = null;
+                // 재시작 버튼만 (둥근 사각형)
+                const rstBtnY = H * 0.54;
+                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
+                ctx.fillStyle = '#1a2a4a';
+                ctx.fill();
+                ctx.strokeStyle = '#4488cc';
+                ctx.lineWidth = 2;
+                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
+                ctx.stroke();
                 ctx.fillStyle = '#88ccff';
-                ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
+                ctx.font = `bold ${Math.floor(TILE * 0.35)}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                const blink = Math.sin(Date.now() / 400) * 0.3 + 0.7;
-                ctx.globalAlpha = blink;
-                ctx.fillText(isMobile ? '탭하여 다시 시작' : '클릭하여 다시 시작', W / 2, H * 0.58);
-                ctx.globalAlpha = 1;
+                ctx.fillText(txt().restartBtn, W / 2, rstBtnY + rstBtnH / 2);
+                window._restartBtn = { x: rstBtnX, y: rstBtnY, w: rstBtnW, h: rstBtnH };
             }
         }
+    }
+
+    // Rotate overlay (portrait mobile)
+    if (showRotateOverlay) {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#88ccff';
+        ctx.font = `${Math.floor(Math.min(W, H) * 0.12)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('📱', W / 2, H * 0.38);
+        ctx.font = `bold ${Math.floor(Math.min(W, H) * 0.045)}px sans-serif`;
+        ctx.fillText(txt().rotatePlease, W / 2, H * 0.53);
     }
 }
 
@@ -2390,6 +2785,41 @@ function drawEnemy(enemy) {
         ctx.beginPath();
         ctx.arc(x + Math.cos(bubbleAngle + 2) * (s + 3), y + Math.sin(bubbleAngle + 2) * (s + 3), 1, 0, Math.PI * 2);
         ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+
+    // Shield visual (boss)
+    if (enemy.shield > 0) {
+        ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 300) * 0.1;
+        ctx.strokeStyle = '#4488ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let hi = 0; hi < 6; hi++) {
+            const hang = (Math.PI * 2 / 6) * hi + Date.now() / 2000;
+            const hpx = x + Math.cos(hang) * (s + 6);
+            const hpy = y + Math.sin(hang) * (s + 6);
+            if (hi === 0) ctx.moveTo(hpx, hpy);
+            else ctx.lineTo(hpx, hpy);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(68,136,255,0.15)';
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+
+    // Speed burst visual (boss)
+    if (enemy.speedBurstActive) {
+        ctx.strokeStyle = '#ff4444';
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.5;
+        for (let sli = 0; sli < 4; sli++) {
+            const sly = y - s * 0.4 + sli * s * 0.25;
+            ctx.beginPath();
+            ctx.moveTo(x - s * 1.8 - sli * 4, sly);
+            ctx.lineTo(x - s * 0.8, sly);
+            ctx.stroke();
+        }
         ctx.globalAlpha = 1;
     }
 
@@ -2657,6 +3087,18 @@ function drawEnemy(enemy) {
         ctx.lineWidth = 1;
         ctx.strokeRect(barX - 1, barY - 1, barW + 2, barH + 2);
     }
+
+    // Shield bar (boss)
+    if (enemy.maxShield > 0) {
+        const shieldRatio = enemy.shield / enemy.maxShield;
+        const sBarY = barY + barH + 2;
+        ctx.fillStyle = '#222';
+        ctx.fillRect(barX, sBarY, barW, 2);
+        if (enemy.shield > 0) {
+            ctx.fillStyle = '#4488ff';
+            ctx.fillRect(barX, sBarY, barW * shieldRatio, 2);
+        }
+    }
 }
 
 // ---- Input handling ----
@@ -2691,10 +3133,8 @@ function handleClick(pos) {
             if (showRewardedAdOption && window._rewardedAdBtn) {
                 const rb = window._rewardedAdBtn;
                 if (pos.x >= rb.x && pos.x <= rb.x + rb.w && pos.y >= rb.y && pos.y <= rb.y + rb.h) {
-                    // 보상형 광고 재생
                     pokiRewardedBreak().then((success) => {
                         if (success) {
-                            // 부활: 라이프 5 회복, 게임 재개
                             gameOver = false;
                             lives = 5;
                             gameOverTimer = 0;
@@ -2708,11 +3148,14 @@ function handleClick(pos) {
                     return;
                 }
             }
-            // 일반 재시작: commercialBreak 후 재시작
-            pokiCommercialBreak().then(() => {
-                restartGame();
-                pokiGameplayStart();
-            });
+            // 재시작 버튼 영역만 감지 (버튼 외 클릭 무시)
+            if (window._restartBtn) {
+                const rb = window._restartBtn;
+                if (pos.x >= rb.x && pos.x <= rb.x + rb.w && pos.y >= rb.y && pos.y <= rb.y + rb.h) {
+                    restartGame();
+                    pokiGameplayStart();
+                }
+            }
         }
         return;
     }
@@ -2722,6 +3165,16 @@ function handleClick(pos) {
         const vb = window._volBtn;
         if (pos.x >= vb.x && pos.x <= vb.x + vb.w && pos.y >= vb.y && pos.y <= vb.y + vb.h) {
             soundMuted = !soundMuted;
+            soundManager.uiClick();
+            return;
+        }
+    }
+
+    // Language button click
+    if (window._langBtn) {
+        const lb = window._langBtn;
+        if (pos.x >= lb.x && pos.x <= lb.x + lb.w && pos.y >= lb.y && pos.y <= lb.y + lb.h) {
+            lang = lang === 'ko' ? 'en' : 'ko';
             soundManager.uiClick();
             return;
         }
@@ -2892,6 +3345,9 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'm' || e.key === 'M') {
         soundMuted = !soundMuted;
     }
+    if (e.key === 'l' || e.key === 'L') {
+        lang = lang === 'ko' ? 'en' : 'ko';
+    }
 });
 
 // ---- Restart ----
@@ -2917,6 +3373,7 @@ function restartGame() {
     screenShakeTimer = 0;
     shockwaves = [];
     groundMarks = [];
+    chainLightnings = [];
     ambientParticles = [];
     prevGold = 150;
     prevLives = 20;
@@ -2967,7 +3424,9 @@ function gameLoop(time) {
     // Game over timer (real time)
     if (gameOver) gameOverTimer += rawDt;
 
-    update(dt);
+    if (!showRotateOverlay) {
+        update(dt);
+    }
     draw();
     requestAnimationFrame(gameLoop);
 }
