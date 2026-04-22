@@ -25,13 +25,6 @@
             overflow: hidden;
             color: #e0e0e0;
         }
-        h1 {
-            font-size: 1.4rem;
-            color: #88ccff;
-            margin-bottom: 8px;
-            letter-spacing: 2px;
-            text-shadow: 0 0 20px rgba(100,180,255,0.3);
-        }
         #gameCanvas {
             border-radius: 12px;
             box-shadow: 0 0 40px rgba(100,180,255,0.15), 0 8px 32px rgba(0,0,0,0.6);
@@ -39,38 +32,24 @@
             cursor: crosshair;
             display: block;
         }
-        #info {
-            margin-top: 8px;
-            font-size: 0.7rem;
-            color: #556;
-            text-align: center;
-        }
-        /* 모바일 대응: 좁은 화면에서 제목 축소, 안내 텍스트 숨김 */
+        /* 모바일 대응 */
         @media (max-width: 768px), (max-height: 500px) {
             body {
                 position: fixed;
                 width: 100%;
                 height: 100%;
+                justify-content: flex-start;
+                padding: 0;
             }
-            h1 {
-                font-size: 0.9rem;
-                margin-bottom: 4px;
+            #gameCanvas {
+                border-radius: 0;
+                box-shadow: none;
             }
-            #info {
-                display: none;
-            }
-        }
-        /* 모바일 가로모드: 제목/안내 완전 숨김 */
-        @media (max-height: 500px) and (orientation: landscape) {
-            h1 { display: none; }
-            #info { display: none; }
         }
     </style>
 </head>
 <body>
-    <h1>TOWER DEFENSE</h1>
     <canvas id="gameCanvas"></canvas>
-    <div id="info">Click to place tower | Click tower to upgrade | M: Mute | L: Language</div>
     <script src="https://game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>
     <script src="game.js"></script>
 </body>

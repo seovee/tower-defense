@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c game.js)",
+      "Bash(node --check game.js)",
+      "Bash(python3 *)",
+      "Bash(node *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8765/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8765/game.js)",
+      "Bash(curl -s -o /dev/null -w \"server: %{http_code}\\\\n\" http://localhost:8765/game.js)",
+      "Bash(curl *)",
+      "Bash(open *)",
+      "Bash(gh api *)"
+    ]
+  }
+}

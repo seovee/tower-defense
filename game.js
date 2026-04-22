@@ -82,9 +82,11 @@ const TOTAL_ROWS = ROWS + UI_ROWS;
 let TILE, W, H;
 let isMobile = false;
 let showRotateOverlay = false;
+let backgroundCache = null;
 
-const MIN_TILE = 36;
-const MAX_TILE = 56;
+const MIN_TILE = 32;
+const MAX_TILE = 96;
+let DPR = 1;
 
 function resize() {
     const isTouchDevice = 'ontouchstart' in window;
@@ -92,38 +94,41 @@ function resize() {
     const isPortrait = window.innerHeight > window.innerWidth;
     const isLandscapeMobile = isTouchDevice && !isPortrait && shortSide <= 500;
 
-    // 사용 가능한 화면 크기 계산 (모바일 가로: 여백 최소화)
-    const marginW = isLandscapeMobile ? 4 : 16;
-    const marginH = isLandscapeMobile ? 8 : 60;
+    // 여백 계산 (타이틀 제거로 데스크톱도 최소화)
+    const marginW = isLandscapeMobile ? 2 : (isTouchDevice ? 6 : 24);
+    const marginH = isLandscapeMobile ? 4 : (isTouchDevice ? 12 : 24);
     const availW = window.innerWidth - marginW;
     const availH = window.innerHeight - marginH;
 
-    // 내부 해상도용 TILE 계산 (작은 화면에서 MIN_TILE 하향)
-    const effectiveMinTile = (isTouchDevice && shortSide <= 500) ? 28 : MIN_TILE;
+    // TILE = 화면에 꽉 차는 크기 (MAX 제한 있지만 큼직함)
     TILE = Math.floor(Math.min(availW / COLS, availH / TOTAL_ROWS));
-    TILE = Math.max(effectiveMinTile, Math.min(MAX_TILE, TILE));
+    TILE = Math.max(MIN_TILE, Math.min(MAX_TILE, TILE));
 
     W = COLS * TILE;
     H = TOTAL_ROWS * TILE;
 
-    // 내부 그리기 해상도 설정 (종이 크기)
-    canvas.width = W;
-    canvas.height = H;
+    // DPR 적용: 내부 해상도를 물리 픽셀 단위로 높여서 선명하게
+    // 상한 1.5로 제한 — Retina(DPR=2)에서 픽셀 수 44% 감소, 성능 우선
+    DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 1.5));
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
 
-    // CSS 표시 크기 설정 (액자 크기) - 화면보다 크면 축소
-    const cssScale = Math.min(availW / W, availH / H, 1.0);
-    const cssW = Math.floor(W * cssScale);
-    const cssH = Math.floor(H * cssScale);
-    canvas.style.width = cssW + 'px';
-    canvas.style.height = cssH + 'px';
+    // 모든 draw 코드는 논리좌표(CSS px) 기반 → DPR로 스케일
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 기본은 스무딩 ON (UI/배경 부드럽게) — drawSprite 내부에서만 픽셀 모드로 전환
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-    // 모바일 판별 (터치 지원 + 좁은 화면)
-    isMobile = ('ontouchstart' in window) && (window.innerWidth <= 768 || window.innerHeight <= 500);
+    // 배경 캐시 무효화 (resize 때마다 재생성)
+    backgroundCache = null;
 
-    // 세로 모드 감지 → "화면을 돌려주세요" 오버레이
+    // 모바일 판별
+    isMobile = isTouchDevice && (window.innerWidth <= 768 || window.innerHeight <= 500);
     showRotateOverlay = isTouchDevice && shortSide <= 500 && isPortrait;
 
-    // Recalculate tower positions based on new TILE
+    // 타워 좌표 재계산
     try {
         for (const t of towers) {
             t.x = t.col * TILE + TILE / 2;
@@ -145,8 +150,30 @@ let gameOver = false;
 let waveActive = false;
 let waveTimer = 0;
 let enemySpawnQueue = [];
+let waveTotalEnemies = 0;
 let spawnTimer = 0;
-let selectedTower = 0; // index into TOWER_TYPES
+let selectedTower = -1; // -1 = 선택 없음 (건설 모드 꺼짐)
+
+// 타워 선택 상태에 따라 커서 변경 (중세풍 크로스헤어)
+function updateCursor() {
+    if (!canvas) return;
+    if (selectedTower >= 0) {
+        // 건설 모드 — 중세풍 황금 크로스헤어
+        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
+<circle cx='16' cy='16' r='11' fill='none' stroke='%23000' stroke-width='4' opacity='0.45'/>
+<circle cx='16' cy='16' r='11' fill='none' stroke='%23ffd84a' stroke-width='2'/>
+<circle cx='16' cy='16' r='7' fill='none' stroke='%23ffd84a' stroke-width='1' opacity='0.6'/>
+<path d='M16 2 L18 11 L16 9 L14 11 Z' fill='%23ffd84a' stroke='%23000' stroke-width='0.6'/>
+<path d='M16 30 L14 21 L16 23 L18 21 Z' fill='%23ffd84a' stroke='%23000' stroke-width='0.6'/>
+<path d='M2 16 L11 14 L9 16 L11 18 Z' fill='%23ffd84a' stroke='%23000' stroke-width='0.6'/>
+<path d='M30 16 L21 18 L23 16 L21 14 Z' fill='%23ffd84a' stroke='%23000' stroke-width='0.6'/>
+<circle cx='16' cy='16' r='1.8' fill='%23ff4020'/>
+</svg>`;
+        canvas.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+    } else {
+        canvas.style.cursor = 'default';
+    }
+}
 let hoveredTile = null;
 let showUpgradeFor = null;
 let showUpgradeTimer = 0;
@@ -162,6 +189,7 @@ let gameSpeed = 1; // 1x, 2x, 3x
 const SPEED_OPTIONS = [1, 2, 3];
 let bossWarningTimer = 0; // 보스 웨이브 경고 연출
 let bossWave = false;
+let waveType = 'normal'; // 'normal' | 'rush' | 'heavy' | 'boss'
 
 // ---- v2.0 New State ----
 let screenShakeIntensity = 0;
@@ -220,6 +248,9 @@ const L = {
         speedBurst: '가속!',
         crit: '치명타!',
         bossWarn: '⚠ BOSS WAVE ⚠',
+        rushWarn: '⚡ 러시 웨이브 ⚡',
+        heavyWarn: '🛡 헤비 웨이브 🛡',
+        swarmWarn: '🦠 스와름 웨이브 🦠',
         rotatePlease: '화면을 가로로 돌려주세요',
         langLabel: '한/EN',
     },
@@ -256,6 +287,9 @@ const L = {
         speedBurst: 'Rush!',
         crit: 'CRIT!',
         bossWarn: '⚠ BOSS WAVE ⚠',
+        rushWarn: '⚡ RUSH WAVE ⚡',
+        heavyWarn: '🛡 HEAVY WAVE 🛡',
+        swarmWarn: '🦠 SWARM WAVE 🦠',
         rotatePlease: 'Please rotate to landscape',
         langLabel: '한/EN',
     },
@@ -471,7 +505,7 @@ class SoundManager {
 }
 const soundManager = new SoundManager();
 
-// ---- Path Definition (snaking path) ----
+// ---- Path Definition ----
 // Grid: 0 = grass, 1 = path, 2 = entry, 3 = exit
 const grid = [];
 for (let r = 0; r < ROWS; r++) {
@@ -481,24 +515,66 @@ for (let r = 0; r < ROWS; r++) {
     }
 }
 
-// Define a snaking path via waypoints (col, row)
-const waypoints = [
-    { x: -1, y: 2 },
-    { x: 4, y: 2 },
-    { x: 4, y: 5 },
-    { x: 10, y: 5 },
-    { x: 10, y: 2 },
-    { x: 16, y: 2 },
-    { x: 16, y: 7 },
-    { x: 6, y: 7 },
-    { x: 6, y: 10 },
-    { x: 14, y: 10 },
-    { x: 14, y: 12 },
-    { x: 20, y: 12 },
+// 3가지 맵 정의 (col, row 기준, COLS=20 / ROWS=14)
+const MAPS = [
+    // 0: 구불구불 S자 (기본) — 원본
+    {
+        name: 'S-Curve',
+        waypoints: [
+            { x: -1, y: 2 },
+            { x: 4, y: 2 },
+            { x: 4, y: 5 },
+            { x: 10, y: 5 },
+            { x: 10, y: 2 },
+            { x: 16, y: 2 },
+            { x: 16, y: 7 },
+            { x: 6, y: 7 },
+            { x: 6, y: 10 },
+            { x: 14, y: 10 },
+            { x: 14, y: 12 },
+            { x: 20, y: 12 },
+        ],
+    },
+    // 1: 지그재그 (좌우로 길게 왔다갔다)
+    {
+        name: 'Zigzag',
+        waypoints: [
+            { x: -1, y: 1 },
+            { x: 18, y: 1 },
+            { x: 18, y: 4 },
+            { x: 2, y: 4 },
+            { x: 2, y: 7 },
+            { x: 18, y: 7 },
+            { x: 18, y: 10 },
+            { x: 2, y: 10 },
+            { x: 2, y: 12 },
+            { x: 20, y: 12 },
+        ],
+    },
+    // 2: 미로 루프 (ㄷ자 경로 2개 연결)
+    {
+        name: 'Loop',
+        waypoints: [
+            { x: -1, y: 1 },
+            { x: 6, y: 1 },
+            { x: 6, y: 6 },
+            { x: 1, y: 6 },
+            { x: 1, y: 11 },
+            { x: 13, y: 11 },
+            { x: 13, y: 3 },
+            { x: 18, y: 3 },
+            { x: 18, y: 12 },
+            { x: 20, y: 12 },
+        ],
+    },
 ];
 
-// Carve path on grid
+let currentMapIndex = Math.floor(Math.random() * MAPS.length);
+let waypoints = MAPS[currentMapIndex].waypoints;
+
 function carvePath() {
+    // 그리드 리셋
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) grid[r][c] = 0;
     for (let i = 0; i < waypoints.length - 1; i++) {
         const a = waypoints[i];
         const b = waypoints[i + 1];
@@ -513,7 +589,6 @@ function carvePath() {
             for (let r = minR; r <= maxR; r++) grid[r][col] = 1;
         }
     }
-    // Mark entry/exit
     if (waypoints[0].y >= 0 && waypoints[0].y < ROWS) {
         const ec = Math.max(0, waypoints[0].x);
         grid[waypoints[0].y][ec] = 2;
@@ -521,7 +596,6 @@ function carvePath() {
 }
 carvePath();
 
-// Build pixel-level path for enemies to follow
 function buildPathPixels() {
     const path = [];
     for (let i = 0; i < waypoints.length; i++) {
@@ -534,10 +608,22 @@ function buildPathPixels() {
 }
 let enemyPath = buildPathPixels();
 
+// 맵 변경 (게임 리셋 시 호출)
+function changeMap(idx) {
+    currentMapIndex = (idx !== undefined) ? idx : Math.floor(Math.random() * MAPS.length);
+    waypoints = MAPS[currentMapIndex].waypoints;
+    carvePath();
+    enemyPath = buildPathPixels();
+    backgroundCache = null;  // 배경 재생성
+    // 잔디/경로 디테일 재생성
+    if (typeof generateGrassBlades === 'function') generateGrassBlades();
+    if (typeof generatePathDetails === 'function') generatePathDetails();
+}
+
 // ---- Ambient Generation ----
 function generateGrassBlades() {
     grassBlades = [];
-    const count = isMobile ? 1 : 3;
+    const count = isMobile ? 1 : 2;
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             if (grid[r][c] !== 0) continue;
@@ -578,8 +664,11 @@ function generatePathDetails() {
 }
 
 function updateAmbientParticles(dt) {
+    // 전투 중(적 많음)엔 스폰 중단 → 기존 파티클만 자연 감소
+    const heavyCombat = enemies.length > 20;
+    const spawnCap = heavyCombat ? 0 : 20;
     // Spawn
-    if (ambientParticles.length < 30 && Math.random() < 0.3) {
+    if (ambientParticles.length < spawnCap && Math.random() < 0.3) {
         const isFirefly = Math.random() < 0.3;
         // Random grass tile
         let rx, ry, attempts = 0;
@@ -615,6 +704,552 @@ function updateAmbientParticles(dt) {
 
 generateGrassBlades();
 generatePathDetails();
+
+// ============================================================
+// ---- Pixel Art Sprite System ----
+// 각 스프라이트는 문자열 배열로 정의. '.' = 투명, 나머지는 팔레트 키.
+// createSprite()로 오프스크린 캔버스에 프리렌더 → drawSprite()로 확대 렌더.
+// ============================================================
+function createSprite(data, palette) {
+    const h = data.length;
+    const w = data[0].length;
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const octx = off.getContext('2d');
+    octx.imageSmoothingEnabled = false;
+    for (let r = 0; r < h; r++) {
+        for (let c = 0; c < w; c++) {
+            const ch = data[r][c];
+            if (ch === '.' || ch === ' ') continue;
+            const color = palette[ch];
+            if (!color) continue;
+            octx.fillStyle = color;
+            octx.fillRect(c, r, 1, 1);
+        }
+    }
+    return off;
+}
+
+function drawSprite(sprite, cx, cy, pxSize, rotation) {
+    const w = sprite.width;
+    const h = sprite.height;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(Math.round(cx), Math.round(cy));
+    if (rotation) ctx.rotate(rotation);
+    ctx.drawImage(sprite, -Math.round(w * pxSize / 2), -Math.round(h * pxSize / 2),
+                  Math.round(w * pxSize), Math.round(h * pxSize));
+    ctx.restore();
+}
+
+// ============================================================
+// ---- Background Cache (그리드 배경 한 번만 렌더링 후 재사용) ----
+// ============================================================
+function generateBackgroundCache() {
+    const off = document.createElement('canvas');
+    off.width = Math.round(W * DPR);
+    off.height = Math.round(ROWS * TILE * DPR);
+    const octx = off.getContext('2d');
+    octx.scale(DPR, DPR);
+    octx.imageSmoothingEnabled = true;
+
+    // 잔디 베이스 (수직 그라디언트)
+    const grassGrad = octx.createLinearGradient(0, 0, 0, ROWS * TILE);
+    grassGrad.addColorStop(0, '#4a8a3c');
+    grassGrad.addColorStop(0.5, '#3d7a36');
+    grassGrad.addColorStop(1, '#2f6030');
+    octx.fillStyle = grassGrad;
+    octx.fillRect(0, 0, W, ROWS * TILE);
+
+    // 잔디 질감 — 부드러운 스팟 (큰 원 몇 개)
+    octx.globalAlpha = 0.1;
+    octx.fillStyle = '#5a9a48';
+    for (let i = 0; i < 30; i++) {
+        const x = (i * 137.5) % W;
+        const y = (i * 89.3) % (ROWS * TILE);
+        const r = 12 + ((i * 17) % 20);
+        octx.beginPath();
+        octx.arc(x, y, r, 0, Math.PI * 2);
+        octx.fill();
+    }
+    octx.fillStyle = '#2a5a28';
+    for (let i = 0; i < 25; i++) {
+        const x = (i * 193.7) % W;
+        const y = (i * 113.1) % (ROWS * TILE);
+        const r = 8 + ((i * 13) % 15);
+        octx.beginPath();
+        octx.arc(x, y, r, 0, Math.PI * 2);
+        octx.fill();
+    }
+    octx.globalAlpha = 1;
+
+    // 경로 타일 — 한번에 묶어서 통합 path로
+    octx.fillStyle = '#9a7a4a';
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            if (grid[r][c] === 0) continue;
+            octx.fillRect(c * TILE, r * TILE, TILE, TILE);
+        }
+    }
+
+    // 경로 라디얼 그라디언트로 깊이감 (약한 그늘)
+    octx.globalAlpha = 0.35;
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            if (grid[r][c] === 0) continue;
+            const x = c * TILE;
+            const y = r * TILE;
+            const pathGrad = octx.createRadialGradient(
+                x + TILE * 0.5, y + TILE * 0.5, TILE * 0.15,
+                x + TILE * 0.5, y + TILE * 0.5, TILE * 0.75
+            );
+            pathGrad.addColorStop(0, 'rgba(180,150,100,0)');
+            pathGrad.addColorStop(1, 'rgba(60,40,20,0.6)');
+            octx.fillStyle = pathGrad;
+            octx.fillRect(x, y, TILE, TILE);
+        }
+    }
+    octx.globalAlpha = 1;
+
+    // 경로 외곽선을 단일 패스로 모아서 한 번에 stroke
+    octx.strokeStyle = 'rgba(40,25,10,0.5)';
+    octx.lineWidth = Math.max(1, TILE / 36);
+    octx.beginPath();
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            if (grid[r][c] === 0) continue;
+            const x = c * TILE;
+            const y = r * TILE;
+            if (r === 0 || grid[r - 1][c] === 0) {
+                octx.moveTo(x, y);
+                octx.lineTo(x + TILE, y);
+            }
+            if (r === ROWS - 1 || grid[r + 1][c] === 0) {
+                octx.moveTo(x, y + TILE);
+                octx.lineTo(x + TILE, y + TILE);
+            }
+            if (c === 0 || grid[r][c - 1] === 0) {
+                octx.moveTo(x, y);
+                octx.lineTo(x, y + TILE);
+            }
+            if (c === COLS - 1 || grid[r][c + 1] === 0) {
+                octx.moveTo(x + TILE, y);
+                octx.lineTo(x + TILE, y + TILE);
+            }
+        }
+    }
+    octx.stroke();
+
+    // 부드러운 흙 얼룩 (경로 위 랜덤 점들)
+    octx.globalAlpha = 0.15;
+    octx.fillStyle = '#6a4a28';
+    for (let i = 0; i < 40; i++) {
+        const c = Math.floor((i * 17) % COLS);
+        const r = Math.floor((i * 29) % ROWS);
+        if (grid[r][c] === 0) continue;
+        const x = c * TILE + ((i * 7) % TILE);
+        const y = r * TILE + ((i * 11) % TILE);
+        const rs = 2 + ((i * 3) % 4);
+        octx.beginPath();
+        octx.arc(x, y, rs, 0, Math.PI * 2);
+        octx.fill();
+    }
+    octx.globalAlpha = 1;
+
+    // 경로 디테일 (조약돌/균열) — 정적이므로 배경 캐시에 포함
+    if (typeof pathDetails !== 'undefined') {
+        for (const pd of pathDetails) {
+            octx.fillStyle = pd.color;
+            if (pd.type === 'pebble') {
+                octx.beginPath();
+                octx.arc(pd.x, pd.y, pd.size, 0, Math.PI * 2);
+                octx.fill();
+            } else {
+                octx.save();
+                octx.translate(pd.x, pd.y);
+                octx.rotate(pd.angle);
+                octx.fillRect(-pd.size * 2, -0.5, pd.size * 4, 1);
+                octx.restore();
+            }
+        }
+    }
+
+    return off;
+}
+
+// ---- Sprite Definitions ----
+const SPRITES = {};
+
+// === Enemy: Normal (고블린, 24×24) ===
+// 팔레트: H=하이라이트, O=주황밝, o=주황중, d=주황어둠, D=외곽선, K=검정, W=이빨, E=눈흰자, P=동공, R=볼터치
+SPRITES.enemyNormal = createSprite([
+    '........................',
+    '........................',
+    '.....D............D.....',  // 뿔 끝
+    '....DKD..........DKD....',
+    '....DdD..........DdD....',
+    '...DdoD..........DodD...',
+    '...DdooDDDDDDDDDDooDD...',  // 뿔 밑동 + 두상 윤곽
+    '..DdoOOOOOOOOOOOOOOoDD..',
+    '..DoOOHHOOOOOOOOHHOOoD..',  // 두상 하이라이트 좌우
+    '.DdOOOOOOOOOOOOOOOOOOdD.',
+    '.DdOOKKKOOOOOOOKKKOOOdD.',  // 눈 구멍
+    '.DoOOKEPKOOOOOOKEPKOOOD.',  // 눈 (흰자 E, 동공 P)
+    '.DoOOKEEKOOOOOOKEEKOOOD.',
+    '.DoOOKKKOOOOOOOKKKOOOoD.',
+    '.DoOORRROOOOOOOORRROOoD.',  // 볼터치
+    '.DdoOOOOOODDDDDOOOOOoOD.',
+    '..DdooOOODWWWKWDOOOooD..',  // 입 윗부분
+    '..DdoooDKWWKWWWKDooodD..',  // 이빨
+    '..DDdoooDKWWWWWKDoodDD..',
+    '...DDdoooDDDDDDDDoodD...',
+    '....DDddooooooooooodD...',  // 턱
+    '.....DDdddooooooodddD...',
+    '.......DDDdddddDDDD.....',  // 바닥
+    '........................',
+], {
+    O: '#ff9d54', o: '#e67a30', d: '#a84814', D: '#3a1a08',
+    H: '#ffc088', K: '#140804', W: '#fff0d0', E: '#ffffff', P: '#c01818', R: '#ff6040'
+});
+
+// === Enemy: Fast (박쥐/임프, 24×24) ===
+// 가로로 긴 실루엣 + 날개. G=초록밝, g=초록중, d=초록어둠, D=외곽선, K=검정, H=하이라이트, E=눈, Y=노란눈, W=송곳니
+SPRITES.enemyFast = createSprite([
+    '........................',
+    '........................',
+    '....D..............D....',  // 귀 끝
+    '....D.DD........DD.D....',
+    'D...DD.DD......DD.DD...D',
+    'DD...DgD.DDDDDD.DgD...DD',  // 귀 안쪽
+    'DDD..DggDDGGGGDDggD..DDD',
+    '.DDDDDggGGGGGGGGggDDDDD.',  // 날개 상단
+    '..DDDggGGHHGGGHHGGggDD..',  // 날개 밝은 부분
+    '..DggGGGHHGGGGGHHGGgD...',
+    '.DgGGGKKKGGGGGGKKKGGgD..',  // 눈 구멍
+    'DgGGGKEYEKGGGGKEYEKGGGgD',  // 노란 눈
+    'DgGGGKEYEKGGGGKEYEKGGGgD',
+    'DgGGGKKKKGGGGGGKKKKGGgD.',
+    '.DgGGGGGGGWKKKWGGGGGGgD.',  // 입 시작
+    '..DgGGGGGDKWWWKDGGGGgD..',
+    '..DDGGGGGGDKWKDGGGGGGDD.',  // 송곳니
+    '...DDggGGGGDDDGGGGggDD..',
+    '.....DDggGGGGGGGggDD....',
+    '......DDDggGGGggDDD.....',
+    '.........DDggggDD.......',
+    '...........DggD.........',  // 꼬리
+    '............DD..........',
+    '........................',
+], {
+    G: '#6bd84a', g: '#3a9028', d: '#1a4a12', D: '#0a2008',
+    H: '#9cf07a', K: '#000000', W: '#fff0d0', E: '#000000', Y: '#ffd820'
+});
+
+// === Enemy: Tank (중장갑 오크, 28×28) ===
+// P=피부밝, p=피부중, d=피부어둠, D=외곽선, M=금속밝, m=금속중, k=금속어둠, K=검정, W=이빨, E=눈, Y=노란눈
+SPRITES.enemyTank = createSprite([
+    '............................',
+    '............................',
+    '.......D..............D.....',  // 어깨 뿔 끝
+    '......DKD............DKD....',
+    '......DMD............DMD....',
+    '.....DMmD............DmMD...',  // 뿔 밑동
+    '.....DMmDDDDDDDDDDDDDmMD....',
+    '....DMmmmPPPPPPPPPPmmmMD....',  // 머리/헬름 상단
+    '....DMmmPPpppppppppPmmMD....',
+    '...DMmmppDDKKKKDKKKDDppmMD..',  // 눈구멍 바이저
+    '...DMmmpPDKEYEKDKEYEKDPpmMD.',  // 노란 눈
+    '...DMmmpPDKKKKDKKKKKKDPpmMD.',
+    '...DMmmpPPPPPPPPPPPPPPPpmMD.',
+    '....DmmpppDWDDDDDWDDDpppmD..',  // 입 윤곽
+    '.....DmppppKWWKKWWWKppppD...',  // 이빨
+    '......DppppDKWWKWKDppppD....',
+    '.....DDMMDDDDDDDDDDDMMDD....',  // 어깨 경계
+    '....DMmmDDmmmmmmmmmDDmmMD...',  // 어깨 갑옷
+    '...DMmmDDmMMMMMMMMMmDDmmMD..',
+    '..DMmmDDMMkkkkkkkkkMMDDmmMD.',  // 가슴판
+    '..DMmmDMMkKKKKKKKKKkMMDmmMD.',  // 벨트 K
+    '..DMmmDMMkkkkkkkkkkkMMDmmMD.',
+    '..DMmmDMMpppppppppppMMDmmMD.',
+    '...DMmDDDDpPPPPPPPPpDDDDmMD.',  // 허리
+    '....DmmmDDpPPPPPPPPpDDmmmD..',  // 다리 분리
+    '....DDMmmDmmmmmmmmmmDmmMDD..',
+    '.....DDMMDDDDDDDDDDDDMMDD...',  // 발
+    '......DDDD......DDDDDDD.....',
+], {
+    P: '#bc80e8', p: '#8248c0', d: '#4a208a', D: '#1a0828',
+    M: '#a0a0b8', m: '#606080', k: '#303048', K: '#000000',
+    W: '#fff0d0', E: '#ffffff', Y: '#ffd820'
+});
+
+// === Enemy: Boss (악마 왕, 40×40) ===
+SPRITES.enemyBoss = createSprite([
+    '........................................',
+    '........................................',
+    '........D....................D..........',  // 뿔 끝
+    '.......DKD..................DKD.........',
+    '.......DRD..................DRD.........',
+    '......DRRD..................DRRD........',
+    '......DRrD..................DrRD........',
+    '.....DRrrD..................DrrRD.......',
+    '....DRrrrD..................DrrrRD......',
+    '...DRrrrrDDDDDDDDDDDDDDDDDDDDrrrrRD.....',  // 뿔 밑동 + 왕관 윤곽
+    '...DRrrrDGGGGGGGGGGGGGGGGGGGGGDrrrRD....',  // 왕관 상단
+    '...DRrrDGGgYgYgYgYgYgYgYgYgYgGGDrrRD....',  // 보석들
+    '....DRrDGggggggggggggggggggggggDDrRD....',
+    '.....DRDGgggGgGgGgGgGgGgGgGgGgggDRD.....',
+    '.....DRDDDDDDDDDDDDDDDDDDDDDDDDDDRD.....',  // 왕관 하단
+    '....DRRDrrRRRRRRRRRRRRRRRRRRRRrrRRRD....',
+    '...DRRRrrRRRRRRRRRRRRRRRRRRRRRRrrRRD....',  // 머리 상단
+    '..DRRRrRRRRRRRRRRRRRRRRRRRRRRRRRrRRD....',
+    '..DRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRD....',
+    '..DRRRRRRRKKKKKKKRRRRRKKKKKKKRRRRRRD....',  // 눈구멍 상단
+    '..DRRRRRKKEEEEEKKRRRRRKKEEEEEKKRRRRD....',  // 눈 (빨간빛)
+    '..DRRRRKKYEEEEYKKRRRRRKKYEEEEYKKRRRD....',
+    '..DRRRRKKYEEEEYKKRRRRRKKYEEEEYKKRRRD....',
+    '..DRRRRRKKEEEEEKKRRRRRKKEEEEEKKRRRRD....',
+    '..DRRRRRRKKKKKKKRRRRRRKKKKKKKRRRRRRD....',  // 눈 하단
+    '...DRRRRRrrrrrrrRRKRRRrrrrrrrRRRRRRD....',  // 코
+    '...DRRRRRrrrrrrrRKKKRrrrrrrrrRRRRRRD....',
+    '....DRRRRrrrrrDKKKKKKKDrrrrrrRRRRRD.....',  // 입 상단
+    '.....DRRRrrrDKKWWKWWKWKKDrrrrRRRRD......',  // 이빨
+    '......DRRrrDKWWKWWKWKWWKDrrrrRRD........',
+    '.......DRrrDKWKWKWKWKWKKDrrrrRD.........',
+    '........DRrDDKKKKKKKKKKDDrrrRD..........',  // 턱
+    '.........DRrrDDDDDDDDDDDrrrRD...........',
+    '..........DRrrrrrrrrrrrrrRRD............',
+    '...........DDRRRRRRRRRRRRDD.............',
+    '............DDRRRRRRRRRDD...............',  // 아래 턱
+    '..............DDDDDDDDD.................',
+    '...............D......D.................',
+    '........................................',
+    '........................................',
+], {
+    R: '#e84040', r: '#a82020', d: '#6a1010', D: '#1a0404',
+    K: '#080000', G: '#ffe050', g: '#b89020', Y: '#ffcc20',
+    E: '#ff3030', W: '#fff0d0'
+});
+
+// 피격 플래시용 흰색 실루엣 (source-in 합성으로 스프라이트 알파 유지)
+function createWhiteSilhouette(sprite) {
+    const off = document.createElement('canvas');
+    off.width = sprite.width;
+    off.height = sprite.height;
+    const octx = off.getContext('2d');
+    octx.imageSmoothingEnabled = false;
+    octx.drawImage(sprite, 0, 0);
+    octx.globalCompositeOperation = 'source-in';
+    octx.fillStyle = '#ffffff';
+    octx.fillRect(0, 0, sprite.width, sprite.height);
+    return off;
+}
+SPRITES.enemyNormalWhite = createWhiteSilhouette(SPRITES.enemyNormal);
+SPRITES.enemyFastWhite = createWhiteSilhouette(SPRITES.enemyFast);
+SPRITES.enemyTankWhite = createWhiteSilhouette(SPRITES.enemyTank);
+SPRITES.enemyBossWhite = createWhiteSilhouette(SPRITES.enemyBoss);
+
+// ============================================================
+// ---- Tower Sprite Definitions ----
+// 타워는 base(고정) + turret(회전) 분리
+// ============================================================
+
+// === Tower: Arrow (나무 탑 + 회전 활) 16×16 ===
+// W=나무밝, w=나무중, d=나무어둠, D=외곽선, S=돌밝, s=돌어둠, K=검정, H=하이라이트
+SPRITES.towerArrowBase = createSprite([
+    '................',
+    '......DDDD......',
+    '.....DsSSsD.....',  // 지붕 꼭대기
+    '....DsSSSSsD....',
+    '...DsSSSSSSsD...',
+    '..DsSSsSSsSSsD..',
+    '..DDDDDDDDDDDD..',  // 지붕 경계
+    '..DWwwwwwwwwWD..',  // 나무 몸체 상단
+    '..DWwHwwwwwHwWD.',
+    '..DWwwwKKwwwwWD.',  // 창문
+    '..DWwwwKKwwwwWD.',
+    '..DWwHwwwwwHwWD.',
+    '..DWwwwwwwwwWD..',
+    '..DdddddddddDd..',
+    '..DSssSssSssSD..',  // 돌 기단
+    '..DDDDDDDDDDDD..',
+], {
+    W: '#d9985c', w: '#a87238', d: '#5a3812', D: '#2a1a04',
+    S: '#a0a0a0', s: '#6a6a6a', K: '#1a0a00', H: '#ffc080'
+});
+
+SPRITES.towerArrowTurret = createSprite([
+    '..W..',
+    '.WwW.',  // 활 상단
+    'WwwW.',
+    'W.aw.',  // 화살대
+    'W.aH.',  // 하이라이트
+    'W.a..',
+    'W.a..',
+    'W.aw.',
+    'WwwW.',
+    '.WwW.',
+    '..W..',
+], { W: '#5a3812', w: '#8a5828', a: '#d9985c', H: '#ffc080' });
+
+// === Tower: Cannon (돌 요새 + 회전 포신) 16×16 ===
+SPRITES.towerCannonBase = createSprite([
+    '................',
+    '..DDDDDDDDDDDD..',
+    '..DKKKKKKKKKKD..',  // 총안 라인
+    '..DSsSsSsSsSsD..',  // 흉벽
+    '..DSSHSSSSHSSD..',  // 하이라이트
+    '..DSsSsKKSsSsD..',  // 중앙 창
+    '..DSSSSKKSSSSD..',
+    '..DSsSsSsSsSsD..',
+    '..DSSHSSSSHSSD..',
+    '..DSsSsSsSsSsD..',
+    '..DSSSSSSSSSSD..',
+    '..DsssssssssD...',  // 경계
+    '..DkkkkkkkkkD...',  // 어두운 베이스
+    '..DkKKKKKKKkD...',
+    '..DkkkkkkkkkD...',
+    '..DDDDDDDDDDD...',
+], {
+    S: '#b8b8c8', s: '#707080', k: '#404050', K: '#1a1a28',
+    D: '#0a0a14', H: '#e0e0f0'
+});
+
+SPRITES.towerCannonTurret = createSprite([
+    '.DDDDD.',
+    'DkkkkkD',
+    'DkIIIkD',  // 포신 상단
+    'DkIHIkD',
+    'DkIIIkD',
+    'DkIIIkD',
+    'DkIIIkD',
+    'DkkkkkD',
+    '.DDDDD.',
+], { D: '#0a0a14', k: '#303040', I: '#5a5a70', H: '#8a8aa0' });
+
+// === Tower: Ice (얼음 오벨리스크) 16×16 ===
+SPRITES.towerIceBase = createSprite([
+    '................',
+    '.......DD.......',
+    '......DCCD......',  // 크리스털 꼭대기
+    '.....DCHHCD.....',
+    '....DCcHHcCD....',
+    '...DCcccccCD....',
+    '...DCccccccCD...',
+    '...DdcccccccD...',  // 크리스털 바닥
+    '...DdDDDDDDDD...',
+    '..DSssssssSSD...',  // 얼음 기단 상단
+    '..DSsHHHHHHsD...',
+    '..DSssssssssD...',
+    '..DSssssssSSD...',
+    '..DdssssssSDd...',
+    '..DDkkkkkkDDd...',
+    '..DDDDDDDDDD....',
+], {
+    C: '#b0ecff', c: '#60b0dc', d: '#2a5070', D: '#0a1a2a',
+    S: '#a0c8e0', s: '#5080a0', k: '#304858', H: '#ffffff'
+});
+
+SPRITES.towerIceTurret = createSprite([
+    '.DWD.',
+    'DCHCD',  // 회전 결정
+    'WCHCW',
+    'DCHCD',
+    '.DWD.',
+], { W: '#d0e8ff', C: '#60b0dc', D: '#0a2a4a', H: '#ffffff' });
+
+// === Tower: Lightning (테슬라 코일) 16×16 ===
+SPRITES.towerLightningBase = createSprite([
+    '................',
+    '.....DMMMMD.....',  // 코일 꼭대기
+    '....DMkkkkMD....',
+    '...DMKKKKKKMD...',
+    '..DMyyYYYYyyMD..',  // 전도체 상단
+    '..DMYYYHYYYYMD..',  // 하이라이트
+    '..DMyyyyyyyyMD..',
+    '..DMYYYYYYHYMD..',
+    '..DMyyYYYYyyMD..',
+    '..DMKKKKKKKKMD..',
+    '..DMkkkkkkkkMD..',
+    '..DMkkKKKKkkMD..',
+    '...DDdddddddDD..',
+    '...DddddddddD...',
+    '...DDDDDDDDDD...',
+    '................',
+], {
+    Y: '#ffee55', y: '#c09020', d: '#3a2a08', D: '#0a0a14',
+    M: '#b0b0c0', K: '#202020', k: '#4a4a58', H: '#ffffff'
+});
+
+SPRITES.towerLightningTurret = createSprite([
+    '.Y.',
+    'YHY',  // 중앙 하이라이트
+    '.Y.',
+], { Y: '#ffee55', H: '#ffffff' });
+
+// === Tower: Poison (가마솥) 16×16 ===
+SPRITES.towerPoisonBase = createSprite([
+    '................',
+    '...DDDDDDDDDD...',  // 가마솥 테두리
+    '..DkkkkkkkkkkD..',
+    '.DkggggggggggkD.',  // 내벽
+    '.DkgGGGGGGGGgkD.',  // 독액 표면
+    '.DkGGGBgggGGGkD.',  // 거품
+    '.DkGggggBgGGgkD.',
+    '.DkgGGGGGGGgkkD.',
+    '.DkkggggggggkkD.',
+    '..DkkKKKKKKkkD..',  // 아래쪽
+    '..DkkkkkkkkkkD..',
+    '...DDDDDDDDDD...',
+    '....DK....KD....',  // 다리 시작
+    '....DkD..DkD....',
+    '....DMD..DMD....',  // 다리
+    '....DDD..DDD....',
+], {
+    G: '#6fff4a', g: '#2fa028', B: '#c0ff98', K: '#0a2a0a',
+    M: '#3a3a3a', k: '#2a2a2a', D: '#050a05'
+});
+
+// Poison은 회전 없음
+
+// === Tile Sprites (잔디/경로 패턴용) ===
+// g=잔디밝, G=잔디중, k=잔디어둠, f=꽃, b=풀잎
+SPRITES.tileGrass = createSprite([
+    'gGgGgGgGgGgGgGgG',
+    'GgGgGbGgGgGgGgGg',
+    'gGgGgGgGgGgfGgGg',
+    'GgGbGgGgGgGgGgGg',
+    'gGgGgGgGgkGgGgGg',
+    'GgGgGgGbGgGgGgGg',
+    'gGgGfGgGgGgGgbGg',
+    'GgGgGgGgGgGgGgGg',
+    'gGgGgGgGgGgGgGgG',
+    'GgGgGgGgGgbGgGgg',
+    'gGgGgGgfGgGgGgGg',
+    'GgGgGbGgGgGgGgGg',
+    'gGgGgGgGgkGgfGgG',
+    'GgGbGgGgGgGgGgGg',
+    'gGgGgGgGgGgGgGgg',
+    'GgGgGgGgGgGgGgGg',
+], { g: '#3a7a38', G: '#326a32', k: '#224a22', b: '#5a9a48', f: '#f8d048' });
+
+SPRITES.tilePath = createSprite([
+    'sSsSsSsSsSsSsSsS',
+    'SsSsSsSsSsSsSsSs',
+    'sSsSsPsSsSsSsSsS',  // P=자갈
+    'SsSsSsSsSsSsSPSs',
+    'sSsSsSsSsSsSsSsS',
+    'SsSpSsSsSsSsSsSs',
+    'sSsSsSsSsSsSsSsS',
+    'SsSsSsSsSsSsSsSs',
+    'sSsSsSsSsPsSsSsS',
+    'SsSsSsSsSsSsSsSs',
+    'sSsSsSsSsSsSsSsS',
+    'SsSsSpSsSsSsSsSs',
+    'sSsSsSsSsSsSPsSS',
+    'SsSsSsSsSsSsSsSs',
+    'sSsSsSsSsSsSsSsS',
+    'SsSsSsSsSsSsSsSs',
+], { S: '#a08858', s: '#806838', P: '#584828', p: '#302818' });
 
 // ---- Tower Types ----
 const TOWER_TYPES = [
@@ -721,10 +1356,10 @@ class Tower {
     get damage() { return Math.floor(this.type.damage * (1 + (this.level - 1) * 0.5)); }
     get range() { return this.type.range + (this.level - 1) * 0.3; }
     get fireRate() { return this.type.fireRate * Math.pow(0.88, this.level - 1); }
-    get upgradeCost() { return Math.floor(this.type.cost * 0.6 * this.level); }
+    get upgradeCost() { return Math.floor(this.type.cost * 0.7 * Math.pow(1.5, this.level - 1)); }
     get sellValue() {
         let total = this.type.cost;
-        for (let i = 1; i < this.level; i++) total += Math.floor(this.type.cost * 0.6 * i);
+        for (let i = 1; i < this.level; i++) total += Math.floor(this.type.cost * 0.7 * Math.pow(1.5, i - 1));
         return Math.floor(total * 0.6);
     }
 }
@@ -843,66 +1478,154 @@ function triggerScreenShake(intensity, duration) {
 }
 
 // ---- Wave definitions ----
+// 난이도 곡선: 초반은 완만, 6웨이브부터 지수 가속
 function getWaveEnemies(waveNum) {
     const enemies = [];
-    const baseHp = 30 + waveNum * 18 + Math.pow(waveNum, 1.7) * 6;
-    const count = 5 + Math.floor(waveNum * 1.8) + Math.floor(waveNum / 8) * 3;
-    const speed = 1.0 + waveNum * 0.04 + Math.floor(waveNum / 10) * 0.05;
-    const goldBase = 5 + Math.floor(waveNum * 0.6);
+    const baseHp = 30 + waveNum * 18 + Math.pow(waveNum, 1.78) * 6.5;
+    // 적 수 증가 (지루하지 않게)
+    const count = 7 + Math.floor(waveNum * 2.2) + Math.floor(waveNum / 6) * 4;
+    const speed = 1.0 + waveNum * 0.04 + Math.floor(waveNum / 10) * 0.06;
+    const goldBase = 5 + Math.floor(waveNum * 0.55);
 
-    for (let i = 0; i < count; i++) {
-        enemies.push({
-            hp: Math.floor(baseHp * (0.8 + Math.random() * 0.4)),
-            speed: speed * (0.9 + Math.random() * 0.2),
-            gold: goldBase + Math.floor(Math.random() * 3),
-            type: 'normal'
-        });
-    }
+    const isBossWave = (waveNum % 5 === 0 && waveNum > 0);
+    const isRushWave = !isBossWave && waveNum >= 7 && waveNum % 3 === 1;
+    const isHeavyWave = !isBossWave && waveNum >= 9 && waveNum % 3 === 0;
+    const isSwarmWave = !isBossWave && !isRushWave && !isHeavyWave && waveNum >= 4 && waveNum % 3 === 2; // 5(보스X),8,11,14...
 
-    // Add fast enemies starting wave 2
-    if (waveNum >= 2) {
-        const fastCount = Math.floor(waveNum * 0.6);
-        for (let i = 0; i < fastCount; i++) {
-            const fastArmor = waveNum >= 18 ? 2 : waveNum >= 10 ? 1 : 0;
+    if (isRushWave) {
+        // 러시 — Fast 대량 + 스와름 섞음
+        const rushCount = count + Math.floor(waveNum * 0.5);
+        for (let i = 0; i < rushCount; i++) {
             enemies.push({
-                hp: Math.floor(baseHp * 0.5),
-                speed: speed * 1.6,
-                gold: goldBase + 2,
+                hp: Math.floor(baseHp * 0.45),
+                speed: speed * 1.65,
+                gold: goldBase + 1,
                 type: 'fast',
-                fastArmor: fastArmor,
+                fastArmor: waveNum >= 18 ? 1 : 0,
             });
         }
-    }
-
-    // Add tank enemies starting wave 4
-    if (waveNum >= 4) {
-        const tankCount = Math.max(1, Math.floor(waveNum * 0.35));
+        // 스와름 떼 섞음 (12~20마리)
+        const swarmCount = 12 + Math.floor(waveNum * 0.5);
+        for (let i = 0; i < swarmCount; i++) {
+            enemies.push({
+                hp: Math.max(8, Math.floor(baseHp * 0.18)),
+                speed: speed * 1.4,
+                gold: 2,
+                type: 'swarm',
+            });
+        }
+        const tankCount = Math.max(1, Math.floor(waveNum * 0.2));
         for (let i = 0; i < tankCount; i++) {
             enemies.push({
-                hp: Math.floor(baseHp * 2.5),
+                hp: Math.floor(baseHp * 2.0),
                 speed: speed * 0.6,
-                gold: goldBase + 5,
+                gold: goldBase + 4,
                 type: 'tank'
             });
         }
+    } else if (isHeavyWave) {
+        // 헤비 — 탱크 중심 + 약간의 일반
+        const normalCount = Math.floor(count * 0.5);
+        for (let i = 0; i < normalCount; i++) {
+            enemies.push({
+                hp: Math.floor(baseHp * (0.9 + Math.random() * 0.3)),
+                speed: speed * (0.9 + Math.random() * 0.2),
+                gold: goldBase + Math.floor(Math.random() * 3),
+                type: 'normal'
+            });
+        }
+        const tankCount = Math.floor(waveNum * 0.5);
+        for (let i = 0; i < tankCount; i++) {
+            enemies.push({
+                hp: Math.floor(baseHp * 2.5),
+                speed: speed * 0.55,
+                gold: goldBase + 6,
+                type: 'tank'
+            });
+        }
+    } else if (isSwarmWave) {
+        // 스와름 웨이브 — 작은 세균 대량
+        const swarmCount = 25 + Math.floor(waveNum * 1.2);
+        for (let i = 0; i < swarmCount; i++) {
+            enemies.push({
+                hp: Math.max(8, Math.floor(baseHp * 0.18)),
+                speed: speed * (1.3 + Math.random() * 0.3),
+                gold: 2,
+                type: 'swarm',
+            });
+        }
+        // 일반 몇마리 섞음
+        const normalCount = Math.floor(count * 0.4);
+        for (let i = 0; i < normalCount; i++) {
+            enemies.push({
+                hp: Math.floor(baseHp * (0.8 + Math.random() * 0.4)),
+                speed: speed * (0.9 + Math.random() * 0.2),
+                gold: goldBase + Math.floor(Math.random() * 2),
+                type: 'normal'
+            });
+        }
+    } else {
+        // 일반 웨이브
+        for (let i = 0; i < count; i++) {
+            enemies.push({
+                hp: Math.floor(baseHp * (0.8 + Math.random() * 0.4)),
+                speed: speed * (0.9 + Math.random() * 0.2),
+                gold: goldBase + Math.floor(Math.random() * 3),
+                type: 'normal'
+            });
+        }
+        // 스와름 소량 항상 섞음 (지루하지 않게) — 웨이브 3부터
+        if (waveNum >= 3) {
+            const swarmCount = 4 + Math.floor(waveNum * 0.5);
+            for (let i = 0; i < swarmCount; i++) {
+                enemies.push({
+                    hp: Math.max(8, Math.floor(baseHp * 0.18)),
+                    speed: speed * 1.35,
+                    gold: 2,
+                    type: 'swarm',
+                });
+            }
+        }
+        if (waveNum >= 2) {
+            const fastCount = Math.floor(waveNum * 0.7);
+            for (let i = 0; i < fastCount; i++) {
+                enemies.push({
+                    hp: Math.floor(baseHp * 0.5),
+                    speed: speed * 1.6,
+                    gold: goldBase + 2,
+                    type: 'fast',
+                    fastArmor: waveNum >= 18 ? 2 : waveNum >= 10 ? 1 : 0,
+                });
+            }
+        }
+        if (waveNum >= 4) {
+            const tankCount = Math.max(1, Math.floor(waveNum * 0.4));
+            for (let i = 0; i < tankCount; i++) {
+                enemies.push({
+                    hp: Math.floor(baseHp * 2.5),
+                    speed: speed * 0.6,
+                    gold: goldBase + 5,
+                    type: 'tank'
+                });
+            }
+        }
     }
 
-    // Boss every 5 waves - escalating bosses
-    if (waveNum % 5 === 0 && waveNum > 0) {
+    // Boss every 5 waves (완화 2차)
+    if (isBossWave) {
         const bossLevel = Math.floor(waveNum / 5);
-        const bossHpMult = 6 + bossLevel * 2; // 8, 10, 12...
+        const bossHpMult = 4.8 + bossLevel * 1.4;
         enemies.push({
             hp: Math.floor(baseHp * bossHpMult),
-            speed: speed * 0.4,
+            speed: speed * 0.42,
             gold: goldBase * 5 + bossLevel * 10,
             type: 'boss',
             bossLevel: bossLevel,
         });
-        // Boss minions (escorts)
-        const minionCount = Math.min(bossLevel * 2, 8);
+        const minionCount = Math.min(bossLevel * 2, 6);
         for (let i = 0; i < minionCount; i++) {
             enemies.push({
-                hp: Math.floor(baseHp * 1.5),
+                hp: Math.floor(baseHp * 1.3),
                 speed: speed * 0.7,
                 gold: goldBase + 3,
                 type: 'tank'
@@ -926,9 +1649,19 @@ function startWave() {
     pokiGameplayStart();
     wave++;
     bossWave = (wave % 5 === 0);
+    // 웨이브 타입 결정 (getWaveEnemies와 동일 규칙)
+    if (bossWave) waveType = 'boss';
+    else if (wave >= 7 && wave % 3 === 1) waveType = 'rush';
+    else if (wave >= 9 && wave % 3 === 0) waveType = 'heavy';
+    else if (wave >= 4 && wave % 3 === 2) waveType = 'swarm';
+    else waveType = 'normal';
+
     if (bossWave) {
         bossWarningTimer = 2.5;
         soundManager.bossWarning();
+    } else if (waveType === 'rush' || waveType === 'heavy' || waveType === 'swarm') {
+        bossWarningTimer = 1.8;
+        soundManager.waveStart();
     } else {
         soundManager.waveStart();
     }
@@ -937,6 +1670,7 @@ function startWave() {
     waveActive = true;
     betweenWaves = false;
     enemySpawnQueue = getWaveEnemies(wave);
+    waveTotalEnemies = enemySpawnQueue.length;
     spawnTimer = 0;
 }
 
@@ -982,9 +1716,14 @@ function sellTower(tower) {
     soundManager.towerSell();
 }
 
-// ---- Distance helper ----
+// ---- Distance helpers ----
 function dist(a, b) {
-    return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    const dx = a.x - b.x, dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+function distSq(a, b) {
+    const dx = a.x - b.x, dy = a.y - b.y;
+    return dx * dx + dy * dy;
 }
 
 // ---- Spawn particles on enemy death ----
@@ -1228,24 +1967,36 @@ function update(dt) {
     for (const tower of towers) {
         tower.cooldown -= dt;
 
-        // Find target
+        // Find target (squared distance + 0.2초마다만 전체 재탐색)
         const rangePixels = tower.range * TILE;
-        let bestTarget = null;
-        let bestProgress = -1;
+        const rangeSq = rangePixels * rangePixels;
+        tower.targetRecheck = (tower.targetRecheck || 0) - dt;
 
-        for (const enemy of enemies) {
-            if (!enemy.alive) continue;
-            if (dist(tower, enemy) <= rangePixels) {
-                // Prefer enemies closest to exit (highest pathIndex)
-                const progress = enemy.pathIndex + (1 - dist(enemy, enemyPath[Math.min(enemy.pathIndex, enemyPath.length - 1)]) / TILE);
-                if (progress > bestProgress) {
-                    bestProgress = progress;
-                    bestTarget = enemy;
-                }
-            }
+        // 현재 타겟이 유효하면 일단 유지
+        let currentValid = false;
+        if (tower.target && tower.target.alive && distSq(tower, tower.target) <= rangeSq) {
+            currentValid = true;
         }
 
-        tower.target = bestTarget;
+        if (!currentValid || tower.targetRecheck <= 0) {
+            tower.targetRecheck = 0.2;
+            let bestTarget = null;
+            let bestProgress = -1;
+            for (const enemy of enemies) {
+                if (!enemy.alive) continue;
+                if (distSq(tower, enemy) <= rangeSq) {
+                    // pathIndex만으로도 진행도 비교 충분 (fractional 제거)
+                    const progress = enemy.pathIndex;
+                    if (progress > bestProgress) {
+                        bestProgress = progress;
+                        bestTarget = enemy;
+                    }
+                }
+            }
+            tower.target = bestTarget;
+        }
+
+        const bestTarget = tower.target;
 
         if (bestTarget) {
             tower.angle = Math.atan2(bestTarget.y - tower.y, bestTarget.x - tower.x);
@@ -1525,16 +2276,23 @@ function update(dt) {
 
 // ---- Drawing helpers ----
 function drawRoundRect(x, y, w, h, r) {
+    // r = scalar (모두 동일) 또는 { tl, tr, bl, br }
+    let tl, tr, br, bl;
+    if (typeof r === 'object' && r !== null) {
+        tl = r.tl || 0; tr = r.tr || 0; br = r.br || 0; bl = r.bl || 0;
+    } else {
+        tl = tr = br = bl = r;
+    }
     ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.moveTo(x + tl, y);
+    ctx.lineTo(x + w - tr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + tr);
+    ctx.lineTo(x + w, y + h - br);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
+    ctx.lineTo(x + bl, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - bl);
+    ctx.lineTo(x, y + tl);
+    ctx.quadraticCurveTo(x, y, x + tl, y);
     ctx.closePath();
 }
 
@@ -1552,65 +2310,25 @@ function draw() {
         ctx.translate(shakeX, shakeY);
     }
 
-    // Draw grass background
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const x = c * TILE;
-            const y = r * TILE;
-
-            if (grid[r][c] === 0) {
-                // Grass with subtle pattern
-                ctx.fillStyle = (r + c) % 2 === 0 ? '#2a5a2a' : '#2d5e2d';
-                ctx.fillRect(x, y, TILE, TILE);
-                // Small grass detail
-                if ((r * 7 + c * 13) % 5 === 0) {
-                    ctx.fillStyle = '#3a6a3a';
-                    ctx.fillRect(x + TILE * 0.3, y + TILE * 0.3, 2, 2);
-                }
-            } else {
-                // Path
-                ctx.fillStyle = '#c4a86a';
-                ctx.fillRect(x, y, TILE, TILE);
-                // Path detail
-                ctx.fillStyle = '#b89858';
-                if ((r + c) % 3 === 0) {
-                    ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
-                }
-                // Path border
-                ctx.strokeStyle = '#a08040';
-                ctx.lineWidth = 0.5;
-                ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
-            }
-        }
+    // Draw grass/path background (오프스크린 캐시 → 정적이므로 한 번만 생성)
+    if (!backgroundCache) {
+        backgroundCache = generateBackgroundCache();
     }
+    ctx.drawImage(backgroundCache, 0, 0, W, ROWS * TILE);
 
-    // Draw path details (pebbles, cracks)
-    for (const pd of pathDetails) {
-        ctx.fillStyle = pd.color;
-        if (pd.type === 'pebble') {
-            ctx.beginPath();
-            ctx.arc(pd.x, pd.y, pd.size, 0, Math.PI * 2);
-            ctx.fill();
-        } else {
-            ctx.save();
-            ctx.translate(pd.x, pd.y);
-            ctx.rotate(pd.angle);
-            ctx.fillRect(-pd.size * 2, -0.5, pd.size * 4, 1);
-            ctx.restore();
-        }
-    }
+    // (경로 디테일은 backgroundCache에 포함되어 있음 — 매 프레임 그리지 않음)
 
-    // Draw grass blades (wind sway)
+    // Draw grass blades (wind sway) — 단일 path로 합쳐서 stroke 1회 (성능)
     const windTime = Date.now() / 800;
+    ctx.strokeStyle = 'rgba(80,150,70,0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
     for (const gb of grassBlades) {
         const sway = Math.sin(windTime + gb.phase) * 3;
-        ctx.strokeStyle = gb.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
         ctx.moveTo(gb.x, gb.y);
         ctx.lineTo(gb.x + sway, gb.y - gb.h);
-        ctx.stroke();
     }
+    ctx.stroke();
 
     // Draw ground marks (from projectile hits)
     for (const gm of groundMarks) {
@@ -1644,18 +2362,67 @@ function draw() {
     }
     ctx.globalAlpha = 1;
 
-    // Entry/Exit markers
+    // Entry / Exit markers — 아이콘 (중앙 정렬, 맥박 애니메이션)
     const entry = waypoints[0];
     const exitP = waypoints[waypoints.length - 1];
-    ctx.fillStyle = '#44cc44';
-    ctx.font = `bold ${Math.floor(TILE * 0.4)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('IN', Math.max(TILE / 2, entry.x * TILE + TILE / 2), entry.y * TILE + TILE / 2 + TILE * 0.15);
-    ctx.fillStyle = '#cc4444';
-    ctx.fillText('OUT', Math.min(W - TILE / 2, exitP.x * TILE + TILE / 2), exitP.y * TILE + TILE / 2 + TILE * 0.15);
+    const pulse = 0.85 + Math.sin(Date.now() / 400) * 0.15;
+    const entryCX = Math.max(TILE / 2, entry.x * TILE + TILE / 2);
+    const entryCY = entry.y * TILE + TILE / 2;
+    const exitCX = Math.min(W - TILE / 2, exitP.x * TILE + TILE / 2);
+    const exitCY = exitP.y * TILE + TILE / 2;
+
+    // Entry: 오른쪽으로 향하는 초록 화살표 (▶)
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.shadowColor = '#44ff66';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#44dd55';
+    const arrowR = TILE * 0.28;
+    ctx.beginPath();
+    ctx.moveTo(entryCX - arrowR * 0.6, entryCY - arrowR * 0.9);
+    ctx.lineTo(entryCX + arrowR * 0.9, entryCY);
+    ctx.lineTo(entryCX - arrowR * 0.6, entryCY + arrowR * 0.9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+
+    // Exit: 과녁/타겟 아이콘 (◎)
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.shadowColor = '#ff4444';
+    ctx.shadowBlur = 12;
+    const tgR = TILE * 0.3;
+    // 외곽 링
+    ctx.strokeStyle = '#ee4444';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(exitCX, exitCY, tgR, 0, Math.PI * 2);
+    ctx.stroke();
+    // 중앙 점
+    ctx.fillStyle = '#ff6666';
+    ctx.beginPath();
+    ctx.arc(exitCX, exitCY, tgR * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    // 십자 표시
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(exitCX - tgR * 0.6, exitCY);
+    ctx.lineTo(exitCX - tgR * 0.3, exitCY);
+    ctx.moveTo(exitCX + tgR * 0.3, exitCY);
+    ctx.lineTo(exitCX + tgR * 0.6, exitCY);
+    ctx.moveTo(exitCX, exitCY - tgR * 0.6);
+    ctx.lineTo(exitCX, exitCY - tgR * 0.3);
+    ctx.moveTo(exitCX, exitCY + tgR * 0.3);
+    ctx.lineTo(exitCX, exitCY + tgR * 0.6);
+    ctx.stroke();
+    ctx.restore();
 
     // Draw tower range indicator when hovering
-    if (hoveredTile && !showUpgradeFor) {
+    if (hoveredTile && !showUpgradeFor && selectedTower >= 0) {
         const hc = hoveredTile.col;
         const hr = hoveredTile.row;
         if (hr < ROWS && grid[hr][hc] === 0 && !towers.some(t => t.col === hc && t.row === hr)) {
@@ -1690,32 +2457,28 @@ function draw() {
 
         drawTowerAt(tower.x, tower.y, tower.typeIndex, tower.level, tower.angle);
 
-        // Muzzle flash glow
+        // Muzzle flash (shadowBlur 대신 3중 원)
         if (tower.muzzleFlash > 0) {
-            ctx.save();
-            ctx.shadowColor = tower.type.projColor;
-            ctx.shadowBlur = 15 * (tower.muzzleFlash / 0.1);
-            ctx.fillStyle = tower.type.projColor;
-            ctx.globalAlpha = tower.muzzleFlash / 0.1 * 0.6;
+            const mt = tower.muzzleFlash / 0.1;
             const muzzleX = tower.x + Math.cos(tower.angle) * TILE * 0.4;
             const muzzleY = tower.y + Math.sin(tower.angle) * TILE * 0.4;
+            ctx.fillStyle = tower.type.projColor;
+            ctx.globalAlpha = mt * 0.25;
             ctx.beginPath();
-            ctx.arc(muzzleX, muzzleY, 4, 0, Math.PI * 2);
+            ctx.arc(muzzleX, muzzleY, 9, 0, Math.PI * 2);
             ctx.fill();
-            ctx.restore();
+            ctx.globalAlpha = mt * 0.5;
+            ctx.beginPath();
+            ctx.arc(muzzleX, muzzleY, 5.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = mt * 0.85;
+            ctx.beginPath();
+            ctx.arc(muzzleX, muzzleY, 3, 0, Math.PI * 2);
+            ctx.fill();
             ctx.globalAlpha = 1;
-            ctx.shadowBlur = 0;
         }
 
-        // Level indicator
-        if (tower.level > 1) {
-            ctx.fillStyle = '#ffdd44';
-            ctx.font = `bold ${Math.floor(TILE * 0.28)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('★'.repeat(Math.min(tower.level - 1, 4)),
-                tower.x, tower.y + TILE * 0.42);
-        }
+        // (레벨은 타워 자체 진화로 표시됨 — 별 제거)
     }
 
     // Draw selected tower range
@@ -1743,73 +2506,147 @@ function draw() {
         const ti = proj.towerTypeIndex;
 
         if (ti === 0) {
-            // Arrow - thin fast line
-            const len = Math.min(proj.trail.length, 3);
-            if (len > 0) {
-                ctx.strokeStyle = proj.color;
-                ctx.lineWidth = 2;
-                ctx.globalAlpha = 0.6;
+            // Arrow - 큼직한 회전 화살 + 진한 꼬리
+            const angle = Math.atan2(
+                proj.target.alive ? proj.target.y - proj.y : (proj.trail.length > 0 ? proj.y - proj.trail[proj.trail.length - 1].y : 0),
+                proj.target.alive ? proj.target.x - proj.x : (proj.trail.length > 0 ? proj.x - proj.trail[proj.trail.length - 1].x : 1)
+            );
+            const critColor = proj.isCrit ? '#ffe066' : '#cfff66';
+            const glowColor = proj.isCrit ? '#ffaa00' : '#66dd33';
+            // 진한 꼬리 (2겹: 외곽 글로우 + 내부 코어)
+            const len = Math.min(proj.trail.length, 6);
+            if (len > 1) {
+                ctx.save();
+                ctx.lineCap = 'round';
+                // 외곽 두꺼운 글로우
+                ctx.strokeStyle = glowColor;
+                ctx.lineWidth = proj.isCrit ? 7 : 5;
+                ctx.globalAlpha = 0.35;
                 ctx.beginPath();
-                ctx.moveTo(proj.trail[Math.max(0, proj.trail.length - len)].x, proj.trail[Math.max(0, proj.trail.length - len)].y);
-                for (let i = Math.max(0, proj.trail.length - len); i < proj.trail.length; i++) {
+                const start = proj.trail.length - len;
+                ctx.moveTo(proj.trail[start].x, proj.trail[start].y);
+                for (let i = start + 1; i < proj.trail.length; i++) {
                     ctx.lineTo(proj.trail[i].x, proj.trail[i].y);
                 }
                 ctx.lineTo(proj.x, proj.y);
                 ctx.stroke();
+                // 내부 선명한 코어
+                ctx.strokeStyle = critColor;
+                ctx.lineWidth = proj.isCrit ? 3 : 2.2;
                 ctx.globalAlpha = 1;
+                ctx.stroke();
+                ctx.restore();
             }
-            // Arrow head with glow (crit = gold, bigger)
+            // 화살촉 (크게)
             ctx.save();
+            ctx.translate(proj.x, proj.y);
+            ctx.rotate(angle);
+            const size = proj.isCrit ? 11 : 8;
             if (proj.isCrit) {
-                ctx.shadowColor = '#ffdd44';
-                ctx.shadowBlur = 12;
-                ctx.fillStyle = '#ffee66';
-                ctx.beginPath();
-                ctx.arc(proj.x, proj.y, 4, 0, Math.PI * 2);
-                ctx.fill();
-            } else {
-                ctx.shadowColor = '#bbff55';
-                ctx.shadowBlur = 6;
-                ctx.fillStyle = '#eeff88';
-                ctx.beginPath();
-                ctx.arc(proj.x, proj.y, 2.5, 0, Math.PI * 2);
-                ctx.fill();
+                ctx.shadowColor = glowColor;
+                ctx.shadowBlur = 14;
             }
+            // 화살대 (두껍게)
+            ctx.strokeStyle = proj.isCrit ? '#aa6a00' : '#3f5e15';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(-size * 0.85, 0);
+            ctx.lineTo(-size * 2.1, 0);
+            ctx.stroke();
+            // 화살촉 (진한 색 외곽 + 밝은 내부로 명확하게)
+            ctx.fillStyle = '#3a2000';
+            ctx.beginPath();
+            ctx.moveTo(size * 1.05, 0);
+            ctx.lineTo(-size * 0.45, -size * 0.65);
+            ctx.lineTo(-size * 0.15, 0);
+            ctx.lineTo(-size * 0.45, size * 0.65);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = critColor;
+            ctx.beginPath();
+            ctx.moveTo(size * 0.85, 0);
+            ctx.lineTo(-size * 0.3, -size * 0.5);
+            ctx.lineTo(-size * 0.1, 0);
+            ctx.lineTo(-size * 0.3, size * 0.5);
+            ctx.closePath();
+            ctx.fill();
+            if (proj.isCrit) ctx.shadowBlur = 0;
+            // 하이라이트 점
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(size * 0.2, -size * 0.18, size * 0.25, 0, Math.PI * 2);
+            ctx.fill();
+            // 깃털 (큼직하게)
+            ctx.fillStyle = proj.isCrit ? '#ffd044' : '#66cc33';
+            ctx.beginPath();
+            ctx.moveTo(-size * 1.95, -size * 0.5);
+            ctx.lineTo(-size * 1.5, 0);
+            ctx.lineTo(-size * 1.95, size * 0.5);
+            ctx.lineTo(-size * 2.35, 0);
+            ctx.closePath();
+            ctx.fill();
             ctx.restore();
 
         } else if (ti === 1) {
-            // Cannon - big glowing ball with smoke trail
+            // Cannon - 큼직한 포탄 + 진한 연기 꼬리
+            // 연기 꼬리 (뒤쪽은 불꽃)
             for (let i = 0; i < proj.trail.length; i++) {
-                const alpha = (i + 1) / proj.trail.length * 0.25;
-                ctx.globalAlpha = alpha;
-                ctx.fillStyle = '#888';
-                const r = 3 - (i / proj.trail.length) * 2;
+                const t = i / proj.trail.length;
+                ctx.globalAlpha = t * 0.55;
+                ctx.fillStyle = t > 0.6 ? '#ff7a33' : '#777';
+                const r1 = 3 + t * 4;
                 ctx.beginPath();
-                ctx.arc(proj.trail[i].x + (Math.random()-0.5)*2, proj.trail[i].y + (Math.random()-0.5)*2, r, 0, Math.PI * 2);
+                ctx.arc(proj.trail[i].x, proj.trail[i].y, r1, 0, Math.PI * 2);
                 ctx.fill();
             }
             ctx.globalAlpha = 1;
-            // Cannonball with glow
+            // 포탄 몸체
             ctx.save();
-            ctx.shadowColor = '#ff8844';
-            ctx.shadowBlur = 8;
-            ctx.fillStyle = '#333';
+            ctx.translate(proj.x, proj.y);
+            ctx.rotate(Date.now() / 80);
+            const rCan = 8;
+            // 화염 할로 (큰 반투명 원)
+            ctx.globalAlpha = 0.55;
+            ctx.fillStyle = '#ff6a22';
             ctx.beginPath();
-            ctx.arc(proj.x, proj.y, 4.5, 0, Math.PI * 2);
+            ctx.arc(0, 0, rCan + 5, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = '#ff8844';
+            ctx.globalAlpha = 0.7;
+            ctx.fillStyle = '#ffaa44';
             ctx.beginPath();
-            ctx.arc(proj.x - 1, proj.y - 1, 2, 0, Math.PI * 2);
+            ctx.arc(0, 0, rCan + 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // 외곽 + 금속 밴드 (두껍게)
+            ctx.fillStyle = '#0d0d0d';
+            ctx.beginPath();
+            ctx.arc(0, 0, rCan, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, rCan - 2, 0, Math.PI * 2);
+            ctx.stroke();
+            // 하이라이트 (크게)
+            ctx.fillStyle = '#ffaa66';
+            ctx.beginPath();
+            ctx.arc(-rCan * 0.35, -rCan * 0.35, rCan * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(-rCan * 0.42, -rCan * 0.42, rCan * 0.22, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
 
         } else if (ti === 2) {
-            // Ice - crystalline snowflake trail
+            // Ice - 큼직한 얼음 결정
+            // 서리 꼬리
             for (let i = 0; i < proj.trail.length; i++) {
-                const alpha = (i + 1) / proj.trail.length * 0.5;
+                const alpha = (i + 1) / proj.trail.length * 0.55;
                 ctx.globalAlpha = alpha;
-                ctx.fillStyle = '#aaeeff';
-                const sz = 1.5 + Math.random();
+                ctx.fillStyle = '#bbeeff';
+                const sz = 2.5;
                 ctx.save();
                 ctx.translate(proj.trail[i].x, proj.trail[i].y);
                 ctx.rotate(i * 0.8);
@@ -1817,72 +2654,96 @@ function draw() {
                 ctx.restore();
             }
             ctx.globalAlpha = 1;
-            // Ice shard
-            ctx.fillStyle = '#88ddff';
+            // 얼음 결정 본체 (크게)
             ctx.save();
             ctx.translate(proj.x, proj.y);
             ctx.rotate(Date.now() / 100);
+            // 바깥 할로
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = '#88ddff';
             ctx.beginPath();
-            ctx.moveTo(0, -4);
-            ctx.lineTo(-3, 0);
-            ctx.lineTo(0, 4);
-            ctx.lineTo(3, 0);
+            ctx.arc(0, 0, 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // 다이아몬드 외곽 (진한 파랑 테두리)
+            ctx.fillStyle = '#2a6890';
+            ctx.beginPath();
+            ctx.moveTo(0, -8);
+            ctx.lineTo(-6, 0);
+            ctx.lineTo(0, 8);
+            ctx.lineTo(6, 0);
             ctx.closePath();
             ctx.fill();
-            ctx.fillStyle = '#ccf0ff';
+            // 내부 (밝은 크리스털)
+            ctx.fillStyle = '#aae6ff';
             ctx.beginPath();
-            ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
+            ctx.moveTo(0, -6);
+            ctx.lineTo(-4.5, 0);
+            ctx.lineTo(0, 6);
+            ctx.lineTo(4.5, 0);
+            ctx.closePath();
+            ctx.fill();
+            // 중심 하이라이트
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(-1, -1.5, 2, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
 
         } else if (ti === 3) {
-            // Lightning - jagged electric bolt from tower to target
-            ctx.strokeStyle = '#ffff44';
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.8;
-            ctx.beginPath();
-            ctx.moveTo(proj.x, proj.y);
+            // Lightning - 더 두꺼운 번개 + 큰 구체
             const tx = proj.target.alive ? proj.target.x : proj.x;
             const ty = proj.target.alive ? proj.target.y : proj.y;
+            // 외곽 글로우 번개
+            ctx.strokeStyle = 'rgba(255,255,100,0.4)';
+            ctx.lineWidth = 5;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(proj.x, proj.y);
             const segments = 4;
+            const pts = [];
             for (let i = 1; i <= segments; i++) {
                 const t = i / segments;
-                const lx = proj.x + (tx - proj.x) * t * 0.3 + (Math.random() - 0.5) * 8;
-                const ly = proj.y + (ty - proj.y) * t * 0.3 + (Math.random() - 0.5) * 8;
+                const lx = proj.x + (tx - proj.x) * t * 0.3 + (Math.random() - 0.5) * 10;
+                const ly = proj.y + (ty - proj.y) * t * 0.3 + (Math.random() - 0.5) * 10;
+                pts.push([lx, ly]);
                 ctx.lineTo(lx, ly);
             }
             ctx.stroke();
-            // Secondary bolt (thinner)
+            // 내부 밝은 번개
             ctx.strokeStyle = '#ffffaa';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 2.5;
             ctx.beginPath();
-            ctx.moveTo(proj.x + (Math.random()-0.5)*3, proj.y + (Math.random()-0.5)*3);
-            for (let i = 1; i <= 3; i++) {
-                const t = i / 3;
-                ctx.lineTo(
-                    proj.x + (Math.random() - 0.5) * 12,
-                    proj.y + (Math.random() - 0.5) * 12
-                );
-            }
+            ctx.moveTo(proj.x, proj.y);
+            for (const [lx, ly] of pts) ctx.lineTo(lx, ly);
             ctx.stroke();
+            // 코어 라인 (가장 밝음)
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            // 전기 구체 (3중 원)
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = '#ffff44';
+            ctx.beginPath();
+            ctx.arc(proj.x, proj.y, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath();
+            ctx.arc(proj.x, proj.y, 6, 0, Math.PI * 2);
+            ctx.fill();
             ctx.globalAlpha = 1;
-            // Electric orb with glow
-            ctx.save();
-            ctx.shadowColor = '#ffff44';
-            ctx.shadowBlur = 10;
-            ctx.fillStyle = '#ffff88';
+            ctx.fillStyle = '#ffffff';
             ctx.beginPath();
             ctx.arc(proj.x, proj.y, 3, 0, Math.PI * 2);
             ctx.fill();
-            ctx.restore();
 
         } else if (ti === 4) {
-            // Poison - bubbly green blob trail
+            // Poison - 큼직한 독 방울 + 진한 꼬리
             for (let i = 0; i < proj.trail.length; i++) {
-                const alpha = (i + 1) / proj.trail.length * 0.4;
+                const alpha = (i + 1) / proj.trail.length * 0.5;
                 ctx.globalAlpha = alpha;
                 ctx.fillStyle = '#44ff22';
-                const r = 1.5 + Math.sin(i * 1.5) * 1;
+                const r = 2 + Math.sin(i * 1.5) * 1.2;
                 ctx.beginPath();
                 ctx.arc(
                     proj.trail[i].x + Math.sin(i * 2) * 2,
@@ -1892,19 +2753,29 @@ function draw() {
                 ctx.fill();
             }
             ctx.globalAlpha = 1;
-            // Poison glob with glow
-            ctx.save();
-            ctx.shadowColor = '#44ff22';
-            ctx.shadowBlur = 8;
-            ctx.fillStyle = '#33cc11';
-            ctx.beginPath();
-            ctx.arc(proj.x, proj.y, 4, 0, Math.PI * 2);
-            ctx.fill();
+            // 독 방울 본체 (크게, 할로 + 외곽 + 내부 + 하이라이트)
+            // 할로
+            ctx.globalAlpha = 0.4;
             ctx.fillStyle = '#66ff44';
             ctx.beginPath();
-            ctx.arc(proj.x - 1, proj.y - 1, 2, 0, Math.PI * 2);
+            ctx.arc(proj.x, proj.y, 9, 0, Math.PI * 2);
             ctx.fill();
-            ctx.restore();
+            ctx.globalAlpha = 1;
+            // 외곽 진한 초록
+            ctx.fillStyle = '#1f7010';
+            ctx.beginPath();
+            ctx.arc(proj.x, proj.y, 6.5, 0, Math.PI * 2);
+            ctx.fill();
+            // 내부
+            ctx.fillStyle = '#44dd22';
+            ctx.beginPath();
+            ctx.arc(proj.x, proj.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+            // 하이라이트
+            ctx.fillStyle = '#aaff88';
+            ctx.beginPath();
+            ctx.arc(proj.x - 1.5, proj.y - 1.5, 2, 0, Math.PI * 2);
+            ctx.fill();
             // Drip bubble
             ctx.fillStyle = '#88ff66';
             ctx.globalAlpha = 0.6;
@@ -1991,19 +2862,28 @@ function draw() {
     }
     ctx.globalAlpha = 1;
 
-    // Draw ambient particles
+    // Draw ambient particles (반딧불 글로우는 적 적을 때만)
+    const fireflyGlowOk = enemies.length < 15;
     for (const ap of ambientParticles) {
         const alpha = Math.min(1, ap.life / ap.maxLife) * 0.6;
         ctx.globalAlpha = alpha;
         if (ap.isFirefly) {
-            ctx.save();
-            ctx.shadowColor = '#aaff44';
-            ctx.shadowBlur = 6;
-            ctx.fillStyle = '#ddff88';
-            ctx.beginPath();
-            ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
+            if (fireflyGlowOk) {
+                ctx.save();
+                ctx.shadowColor = '#aaff44';
+                ctx.shadowBlur = 6;
+                ctx.fillStyle = '#ddff88';
+                ctx.beginPath();
+                ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            } else {
+                // 많을 땐 글로우 생략
+                ctx.fillStyle = '#ddff88';
+                ctx.beginPath();
+                ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
         } else {
             ctx.fillStyle = 'rgba(200,200,180,0.4)';
             ctx.beginPath();
@@ -2012,7 +2892,6 @@ function draw() {
         }
     }
     ctx.globalAlpha = 1;
-    ctx.shadowBlur = 0;
 
     // Draw floating texts
     for (const ft of floatingTexts) {
@@ -2056,6 +2935,145 @@ function draw() {
     // Restore screen shake transform before UI
     ctx.restore();
 
+    // ---- 상단 우측 웨이브 뱃지 (영구 표시) ----
+    {
+        const pillPad = Math.max(8, Math.floor(TILE * 0.25));
+        const pillH = Math.max(28, Math.floor(TILE * 0.55));
+        // 웨이브 진행도 (활성 적 + 소환 대기)
+        const aliveCount = enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
+        const remaining = aliveCount + enemySpawnQueue.length;
+        const hasProgress = waveActive && waveTotalEnemies > 0;
+
+        // 텍스트 측정 (두 세그먼트 분리)
+        const mainFont = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`;
+        const progFont = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", system-ui, sans-serif`;
+        const mainLabel = txt().waveNum(Math.max(1, wave));
+        const progLabel = `${remaining} / ${waveTotalEnemies}`;
+        ctx.font = mainFont;
+        const mainW = ctx.measureText(mainLabel).width;
+        ctx.font = progFont;
+        const progW = hasProgress ? ctx.measureText(progLabel).width : 0;
+        const sepGap = hasProgress ? Math.max(10, Math.floor(TILE * 0.18)) : 0;
+        const sepW = hasProgress ? 2 : 0; // 구분선 두께
+        const iconW = Math.floor(TILE * 0.3);
+
+        const pillW = iconW + 6 + mainW + sepGap + sepW + sepGap + progW + pillPad * 2;
+        const pillX = W - pillW - Math.max(8, Math.floor(TILE * 0.2));
+        const pillY = Math.max(8, Math.floor(TILE * 0.2));
+        const pillR = pillH / 2;
+
+        // 배경
+        ctx.save();
+        ctx.shadowColor = 'rgba(100,180,255,0.4)';
+        ctx.shadowBlur = 10;
+        drawRoundRect(pillX, pillY, pillW, pillH, pillR);
+        const pillGrad = ctx.createLinearGradient(pillX, pillY, pillX, pillY + pillH);
+        pillGrad.addColorStop(0, 'rgba(40,50,85,0.92)');
+        pillGrad.addColorStop(1, 'rgba(20,25,50,0.92)');
+        ctx.fillStyle = pillGrad;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(120,180,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+
+        // 보스 웨이브면 빨강 틴트
+        if (wave > 0 && wave % 5 === 0) {
+            ctx.save();
+            drawRoundRect(pillX, pillY, pillW, pillH, pillR);
+            ctx.fillStyle = 'rgba(220,60,60,0.18)';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        const centerY = pillY + pillH / 2 + 1;
+
+        // 아이콘 (크로스드 소드)
+        ctx.save();
+        ctx.translate(pillX + pillPad + iconW / 2, centerY - 1);
+        ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ff8888' : '#88ccff';
+        ctx.font = `${Math.floor(TILE * 0.32)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('⚔', 0, 1);
+        ctx.restore();
+
+        // 메인 라벨 (웨이브 번호)
+        ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ffd0d0' : '#ffffff';
+        ctx.font = mainFont;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const mainX = pillX + pillPad + iconW + 6;
+        ctx.fillText(mainLabel, mainX, centerY);
+
+        // 구분선 + 진행도 (완전히 다른 톤)
+        if (hasProgress) {
+            const sepX = mainX + mainW + sepGap;
+            // 세로 구분선
+            ctx.strokeStyle = 'rgba(160,180,220,0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(sepX, pillY + pillH * 0.25);
+            ctx.lineTo(sepX, pillY + pillH * 0.75);
+            ctx.stroke();
+            // 진행도 (작고 노란색 톤)
+            ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ffaa80' : '#ffcc55';
+            ctx.font = progFont;
+            ctx.textAlign = 'left';
+            ctx.fillText(progLabel, sepX + sepGap, centerY);
+        }
+    }
+
+    // ---- 보스 HP 바 (보스 등장 시 상단 중앙) ----
+    {
+        const boss = enemies.find(e => e.alive && e.type === 'boss');
+        if (boss) {
+            const bx1 = W * 0.25;
+            const bw = W * 0.5;
+            const bh = Math.max(18, Math.floor(TILE * 0.36));
+            const by = Math.max(6, Math.floor(TILE * 0.2));
+            const ratio = Math.max(0, boss.hp / boss.maxHp);
+            // 배경
+            ctx.fillStyle = 'rgba(10,10,20,0.85)';
+            drawRoundRect(bx1, by, bw, bh, bh / 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(200,40,40,0.7)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            // HP 그라디언트 바
+            const hpColor = ratio > 0.5 ? '#ff4040' : ratio > 0.25 ? '#ffaa40' : '#ff2020';
+            const hpGrad = ctx.createLinearGradient(bx1, by, bx1, by + bh);
+            hpGrad.addColorStop(0, hpColor);
+            hpGrad.addColorStop(1, ratio > 0.5 ? '#a01010' : '#6a0808');
+            ctx.fillStyle = hpGrad;
+            drawRoundRect(bx1 + 2, by + 2, Math.max(0, (bw - 4) * ratio), bh - 4, (bh - 4) / 2);
+            ctx.fill();
+            // 상단 광택
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            drawRoundRect(bx1 + 2, by + 2, Math.max(0, (bw - 4) * ratio), (bh - 4) * 0.4, { tl: (bh - 4) / 2, tr: (bh - 4) / 2, bl: 0, br: 0 });
+            ctx.fill();
+            // 텍스트 (이름 + HP 숫자)
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 3;
+            const bossLabel = (lang === 'ko' ? '보스' : 'BOSS') + ` · ${Math.ceil(boss.hp)} / ${boss.maxHp}`;
+            ctx.fillText(bossLabel, bx1 + bw / 2, by + bh / 2 + 1);
+            ctx.shadowBlur = 0;
+            // 실드 바 (작게)
+            if (boss.maxShield > 0 && boss.shield > 0) {
+                const sbY = by + bh + 3;
+                ctx.fillStyle = 'rgba(10,10,20,0.7)';
+                ctx.fillRect(bx1, sbY, bw, 5);
+                ctx.fillStyle = '#4488ff';
+                ctx.fillRect(bx1, sbY, bw * (boss.shield / boss.maxShield), 5);
+            }
+        }
+    }
+
     // ---- UI Panel (bottom) ----
     const uiY = ROWS * TILE;
     const uiGrad = ctx.createLinearGradient(0, uiY, 0, uiY + UI_ROWS * TILE);
@@ -2064,470 +3082,903 @@ function draw() {
     ctx.fillStyle = uiGrad;
     ctx.fillRect(0, uiY, W, UI_ROWS * TILE);
 
-    // Top bar of UI
+    // Top bar of UI (모던 그라디언트 + 글로우 라인)
     const barGrad = ctx.createLinearGradient(0, uiY, 0, uiY + TILE * 0.8);
-    barGrad.addColorStop(0, '#222244');
-    barGrad.addColorStop(1, '#1a1a30');
+    barGrad.addColorStop(0, '#262645');
+    barGrad.addColorStop(0.6, '#1d1d35');
+    barGrad.addColorStop(1, '#15152a');
     ctx.fillStyle = barGrad;
     ctx.fillRect(0, uiY, W, TILE * 0.8);
-    // 하단 구분선
-    ctx.strokeStyle = 'rgba(100,160,255,0.15)';
+    // 상단 하이라이트 (미세한 광택)
+    ctx.fillStyle = 'rgba(120,180,255,0.08)';
+    ctx.fillRect(0, uiY, W, 1);
+    // 하단 구분 네온 라인
+    ctx.strokeStyle = 'rgba(100,180,255,0.25)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, uiY + TILE * 0.8);
     ctx.lineTo(W, uiY + TILE * 0.8);
     ctx.stroke();
 
-    // Stats — 개별 뱃지 컨테이너
+    // 좌우 공통 패딩
+    const UI_PAD = Math.max(10, Math.floor(TILE * 0.22));
+
+    // Stats — 개별 뱃지 (gold / lives / score 3개)
     ctx.textBaseline = 'middle';
     const barH = TILE * 0.8;
     const badgePad = 4;
     const badgeH = barH - badgePad * 2;
-    const badgeR = 4;
-    const fontSize = Math.floor(TILE * 0.32);
-    const iconSize = Math.floor(TILE * 0.3);
+    const badgeR = 8;
+    const fontSize = Math.floor(TILE * 0.3);
+    const iconSize = Math.floor(TILE * 0.28);
     const statY = uiY + barH / 2;
 
     const stats = [
-        { icon: '🌊', label: `${wave}`, color: '#88ccff', bg: 'rgba(80,140,220,0.15)', border: 'rgba(80,140,220,0.35)' },
-        { icon: '💰', label: `${gold}`, color: '#ffdd44', bg: 'rgba(220,180,40,0.15)', border: 'rgba(220,180,40,0.35)' },
-        { icon: '❤️', label: `${lives}`, color: '#ff6666', bg: 'rgba(220,70,70,0.15)', border: 'rgba(220,70,70,0.35)' },
-        { icon: '⭐', label: `${score}`, color: '#aaaadd', bg: 'rgba(150,150,200,0.15)', border: 'rgba(150,150,200,0.3)' },
+        { icon: '💰', label: `${gold}`, color: '#ffdd44', glow: 'rgba(255,212,68,0.25)',
+          bgA: 'rgba(80,60,20,0.45)', bgB: 'rgba(50,40,10,0.45)', border: 'rgba(255,212,68,0.35)' },
+        { icon: '❤', label: `${lives}`, color: '#ff8080', glow: 'rgba(255,90,90,0.25)',
+          bgA: 'rgba(80,25,30,0.45)', bgB: 'rgba(50,15,20,0.45)', border: 'rgba(255,100,100,0.35)' },
+        { icon: '★', label: `${score}`, color: '#cfd3ff', glow: 'rgba(170,180,240,0.25)',
+          bgA: 'rgba(45,50,80,0.45)', bgB: 'rgba(25,30,55,0.45)', border: 'rgba(160,170,230,0.3)' },
     ];
 
-    // 오른쪽 버튼 3개 총 너비 미리 계산하여 뱃지 영역 확보
-    const _speedBtnW = Math.floor(TILE * 1.5);
-    const _volBtnW = Math.floor(TILE * 0.75);
-    const _langBtnW = Math.floor(TILE * 0.9);
-    const _btnGap = Math.max(6, Math.floor(TILE * 0.15));
-    const rightBtnsW = _speedBtnW + _volBtnW + _langBtnW + _btnGap * 4;
-    const availStatW = W - rightBtnsW - 12;
-    const gap = 5;
-    const badgeW = Math.floor((availStatW - gap * (stats.length - 1)) / stats.length);
-    let bx = 6;
+    // 오른쪽 버튼 영역 (넉넉한 너비)
+    const btnGap = Math.max(8, Math.floor(TILE * 0.18));
+    const uniformBtnW = Math.max(Math.floor(TILE * 1.5), 76);
+    const btnH = Math.floor(TILE * 0.65);
+    const btnY = uiY + Math.floor((TILE * 0.8 - btnH) / 2);
+    const rightBtnsW = uniformBtnW * 3 + btnGap * 2;
+
+    // 왼쪽 스탯 뱃지 — 컨텐츠 크기 기반 (조금 더 여유)
+    const gap = Math.max(6, Math.floor(TILE * 0.12));
+    const badgeW = Math.max(Math.floor(TILE * 1.95), 100);
+    const statsTotalW = badgeW * stats.length + gap * (stats.length - 1);
+    const dividerX = UI_PAD + statsTotalW + Math.max(10, Math.floor(TILE * 0.2));
+    let bx = UI_PAD;
 
     for (let si = 0; si < stats.length; si++) {
         const st = stats[si];
-        // 뱃지 배경
-        drawRoundRect(bx, uiY + badgePad, badgeW, badgeH, badgeR);
-        ctx.fillStyle = st.bg;
+        const badgeY = uiY + badgePad;
+
+        // 뱃지 배경 (세로 그라디언트)
+        const badgeGrad = ctx.createLinearGradient(0, badgeY, 0, badgeY + badgeH);
+        badgeGrad.addColorStop(0, st.bgA);
+        badgeGrad.addColorStop(1, st.bgB);
+        drawRoundRect(bx, badgeY, badgeW, badgeH, badgeR);
+        ctx.fillStyle = badgeGrad;
+        ctx.fill();
+        // 상단 광택
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        drawRoundRect(bx, badgeY, badgeW, badgeH * 0.5, { tl: badgeR, tr: badgeR, bl: 0, br: 0 });
         ctx.fill();
         ctx.strokeStyle = st.border;
         ctx.lineWidth = 1;
+        drawRoundRect(bx, badgeY, badgeW, badgeH, badgeR);
         ctx.stroke();
 
-        // Flash overlay (gold = index 1, lives = index 2)
-        if (si === 1 && goldFlashTimer > 0) {
-            ctx.globalAlpha = goldFlashTimer / 0.4 * 0.3;
-            drawRoundRect(bx, uiY + badgePad, badgeW, badgeH, badgeR);
+        // Flash overlay (gold = 0, lives = 1)
+        if (si === 0 && goldFlashTimer > 0) {
+            ctx.globalAlpha = goldFlashTimer / 0.4 * 0.35;
+            drawRoundRect(bx, badgeY, badgeW, badgeH, badgeR);
             ctx.fillStyle = '#ffdd44';
             ctx.fill();
             ctx.globalAlpha = 1;
         }
-        if (si === 2 && livesFlashTimer > 0) {
-            ctx.globalAlpha = livesFlashTimer / 0.5 * 0.35;
-            drawRoundRect(bx, uiY + badgePad, badgeW, badgeH, badgeR);
+        if (si === 1 && livesFlashTimer > 0) {
+            ctx.globalAlpha = livesFlashTimer / 0.5 * 0.4;
+            drawRoundRect(bx, badgeY, badgeW, badgeH, badgeR);
             ctx.fillStyle = '#ff4444';
             ctx.fill();
             ctx.globalAlpha = 1;
         }
 
-        // 아이콘
-        ctx.font = `${iconSize}px sans-serif`;
-        ctx.textAlign = 'left';
-        ctx.fillText(st.icon, bx + 5, statY + 1);
-
-        // 값
-        ctx.font = `bold ${fontSize}px sans-serif`;
+        // 아이콘 (색상 통일, 글로우)
+        ctx.save();
+        ctx.shadowColor = st.glow;
+        ctx.shadowBlur = 6;
+        ctx.font = `bold ${iconSize}px "Segoe UI", system-ui, sans-serif`;
         ctx.fillStyle = st.color;
-        ctx.textAlign = 'center';
-        ctx.fillText(st.label, bx + badgeW / 2 + iconSize * 0.35, statY);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(st.icon, bx + Math.floor(badgeW * 0.13), statY + 1);
+        ctx.restore();
+
+        // 값 (뱃지 우측에 우측정렬)
+        ctx.font = `bold ${fontSize}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(st.label, bx + badgeW - Math.floor(badgeW * 0.12), statY + 1);
 
         bx += badgeW + gap;
     }
 
-    // ---- Right-side buttons (Speed / Volume / Language) ----
-    // 고정 너비 + 균일 간격으로 오른쪽→왼쪽 배치
-    const btnGap = Math.max(6, Math.floor(TILE * 0.15));
-    const btnH = Math.floor(TILE * 0.65);
-    const btnY = uiY + Math.floor((TILE * 0.8 - btnH) / 2);
-    const speedBtnW = Math.floor(TILE * 1.5);
-    const volBtnW = Math.floor(TILE * 0.75);
-    const langBtnW = Math.floor(TILE * 0.9);
-    let btnRight = W - btnGap; // 오른쪽 시작점
+    // 스탯 ↔ 버튼 구분 세로 디바이더
+    const divY1 = uiY + TILE * 0.2;
+    const divY2 = uiY + TILE * 0.6;
+    const divGrad = ctx.createLinearGradient(dividerX, divY1, dividerX, divY2);
+    divGrad.addColorStop(0, 'rgba(120,180,255,0)');
+    divGrad.addColorStop(0.5, 'rgba(120,180,255,0.4)');
+    divGrad.addColorStop(1, 'rgba(120,180,255,0)');
+    ctx.strokeStyle = divGrad;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(dividerX, divY1);
+    ctx.lineTo(dividerX, divY2);
+    ctx.stroke();
 
-    // Speed button (가장 오른쪽) — 고정 너비, [Q] 제거
+    // ---- Right-side buttons (모두 동일 너비) ----
+    // 공통 버튼 렌더링 헬퍼
+    function drawIconBtn(bx, by, bw, bh, opts) {
+        // opts: { bgA, bgB, border, icon, iconColor, iconFont, glow, active }
+        const r = 8;
+        // 그림자
+        if (opts.active) {
+            ctx.shadowColor = opts.glow || 'rgba(100,180,255,0.4)';
+            ctx.shadowBlur = 10;
+        }
+        drawRoundRect(bx, by, bw, bh, r);
+        const g = ctx.createLinearGradient(0, by, 0, by + bh);
+        g.addColorStop(0, opts.bgA);
+        g.addColorStop(1, opts.bgB);
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        // 상단 하이라이트
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        drawRoundRect(bx, by, bw, bh * 0.5, { tl: r, tr: r, bl: 0, br: 0 });
+        ctx.fill();
+        // 테두리
+        ctx.strokeStyle = opts.border;
+        ctx.lineWidth = 1.5;
+        drawRoundRect(bx, by, bw, bh, r);
+        ctx.stroke();
+        // 아이콘
+        ctx.fillStyle = opts.iconColor;
+        ctx.font = opts.iconFont;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(opts.icon, bx + bw / 2, by + bh / 2 + 1);
+    }
+
+    let btnRight = W - UI_PAD;
+
+    // Speed button (가장 오른쪽)
     const speedLabels = txt().speedLabels;
     const speedLabel = speedLabels[gameSpeed - 1];
-    const speedBtnX = btnRight - speedBtnW;
-    drawRoundRect(speedBtnX, btnY, speedBtnW, btnH, 5);
-    ctx.fillStyle = gameSpeed === 1 ? '#1e1e35' : gameSpeed === 2 ? '#1e2e1e' : '#3a1a1a';
-    ctx.fill();
-    ctx.strokeStyle = gameSpeed === 1 ? '#556' : gameSpeed === 2 ? '#88cc44' : '#ff6644';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = gameSpeed === 1 ? '#aab' : gameSpeed === 2 ? '#88ff44' : '#ff6644';
-    ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText(speedLabel, speedBtnX + speedBtnW / 2, btnY + btnH * 0.5 + 1);
-    window._speedBtn = { x: speedBtnX, y: btnY, w: speedBtnW, h: btnH };
-    // [Q] 힌트를 버튼 아래 별도 텍스트로 (데스크톱만)
-    if (!isMobile) {
-        ctx.font = `${Math.floor(TILE * 0.18)}px sans-serif`;
-        ctx.fillStyle = '#667';
-        ctx.fillText('[Q]', speedBtnX + speedBtnW / 2, btnY + btnH + Math.floor(TILE * 0.15));
-    }
+    const speedBtnX = btnRight - uniformBtnW;
+    const speedActive = gameSpeed > 1;
+    drawIconBtn(speedBtnX, btnY, uniformBtnW, btnH, {
+        bgA: gameSpeed === 1 ? 'rgba(40,45,75,0.9)' : gameSpeed === 2 ? 'rgba(45,80,40,0.9)' : 'rgba(100,35,35,0.9)',
+        bgB: gameSpeed === 1 ? 'rgba(25,30,55,0.9)' : gameSpeed === 2 ? 'rgba(25,50,25,0.9)' : 'rgba(60,20,20,0.9)',
+        border: gameSpeed === 1 ? 'rgba(120,140,180,0.45)' : gameSpeed === 2 ? 'rgba(136,204,68,0.6)' : 'rgba(255,100,70,0.6)',
+        icon: speedLabel,
+        iconColor: gameSpeed === 1 ? '#b4c0e0' : gameSpeed === 2 ? '#a8ff60' : '#ffa080',
+        iconFont: `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`,
+        glow: speedActive ? (gameSpeed === 2 ? 'rgba(136,204,68,0.4)' : 'rgba(255,100,70,0.4)') : null,
+        active: speedActive
+    });
+    window._speedBtn = { x: speedBtnX, y: btnY, w: uniformBtnW, h: btnH };
     btnRight = speedBtnX - btnGap;
 
-    // Volume button — 고정 너비
-    const volBtnX = btnRight - volBtnW;
-    drawRoundRect(volBtnX, btnY, volBtnW, btnH, 5);
-    ctx.fillStyle = soundMuted ? '#3a1a1a' : '#1e1e35';
-    ctx.fill();
-    ctx.strokeStyle = soundMuted ? '#cc4444' : '#556';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = soundMuted ? '#ff6644' : '#aab';
-    ctx.font = `${Math.floor(TILE * 0.35)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText(soundMuted ? '🔇' : '🔊', volBtnX + volBtnW / 2, btnY + btnH * 0.5 + 1);
-    window._volBtn = { x: volBtnX, y: btnY, w: volBtnW, h: btnH };
+    // Volume button
+    const volBtnX = btnRight - uniformBtnW;
+    drawIconBtn(volBtnX, btnY, uniformBtnW, btnH, {
+        bgA: soundMuted ? 'rgba(90,35,35,0.9)' : 'rgba(40,45,75,0.9)',
+        bgB: soundMuted ? 'rgba(55,20,20,0.9)' : 'rgba(25,30,55,0.9)',
+        border: soundMuted ? 'rgba(255,100,70,0.6)' : 'rgba(120,140,180,0.45)',
+        icon: soundMuted ? '🔇' : '🔊',
+        iconColor: soundMuted ? '#ff8066' : '#b4c0e0',
+        iconFont: `${Math.floor(TILE * 0.35)}px sans-serif`,
+        glow: soundMuted ? 'rgba(255,100,70,0.4)' : null,
+        active: soundMuted
+    });
+    window._volBtn = { x: volBtnX, y: btnY, w: uniformBtnW, h: btnH };
     btnRight = volBtnX - btnGap;
 
-    // Language button — 고정 너비
-    const langBtnX = btnRight - langBtnW;
-    drawRoundRect(langBtnX, btnY, langBtnW, btnH, 5);
-    ctx.fillStyle = '#1e1e35';
-    ctx.fill();
-    ctx.strokeStyle = '#556';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = '#aab';
-    ctx.font = `bold ${Math.floor(TILE * 0.24)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText(txt().langLabel, langBtnX + langBtnW / 2, btnY + btnH * 0.5 + 1);
-    window._langBtn = { x: langBtnX, y: btnY, w: langBtnW, h: btnH };
+    // Language button
+    const langBtnX = btnRight - uniformBtnW;
+    drawIconBtn(langBtnX, btnY, uniformBtnW, btnH, {
+        bgA: 'rgba(40,45,75,0.9)',
+        bgB: 'rgba(25,30,55,0.9)',
+        border: 'rgba(120,140,180,0.45)',
+        icon: txt().langLabel,
+        iconColor: '#b4c0e0',
+        iconFont: `bold ${Math.floor(TILE * 0.28)}px "Segoe UI", system-ui, sans-serif`,
+        glow: null,
+        active: false
+    });
+    window._langBtn = { x: langBtnX, y: btnY, w: uniformBtnW, h: btnH };
 
-    // Boss warning overlay
-    if (bossWarningTimer > 0) {
-        const warnAlpha = Math.min(1, bossWarningTimer / 0.5) * (0.3 + Math.sin(Date.now() / 100) * 0.15);
-        ctx.fillStyle = `rgba(180, 0, 0, ${warnAlpha})`;
+    // Wave warning overlay (boss / rush / heavy)
+    if (bossWarningTimer > 0 && waveType !== 'normal') {
+        let overlayColor, textColor, warnText;
+        if (waveType === 'boss') {
+            overlayColor = 'rgba(180, 0, 0,';
+            textColor = '#ff2222';
+            warnText = txt().bossWarn;
+        } else if (waveType === 'rush') {
+            overlayColor = 'rgba(220, 180, 0,';
+            textColor = '#ffdd33';
+            warnText = txt().rushWarn;
+        } else if (waveType === 'heavy') {
+            overlayColor = 'rgba(120, 60, 180,';
+            textColor = '#cc88ff';
+            warnText = txt().heavyWarn;
+        } else { // swarm
+            overlayColor = 'rgba(40, 180, 80,';
+            textColor = '#88ff88';
+            warnText = txt().swarmWarn;
+        }
+        const warnAlpha = Math.min(1, bossWarningTimer / 0.5) * (0.25 + Math.sin(Date.now() / 100) * 0.12);
+        ctx.fillStyle = `${overlayColor} ${warnAlpha})`;
         ctx.fillRect(0, 0, W, ROWS * TILE);
 
-        ctx.fillStyle = '#ff2222';
-        ctx.font = `bold ${Math.floor(TILE * 0.9)}px sans-serif`;
+        ctx.fillStyle = textColor;
+        ctx.font = `bold ${Math.floor(TILE * 0.85)}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.globalAlpha = Math.min(1, bossWarningTimer / 0.5);
-        ctx.fillText(txt().bossWarn, W / 2, ROWS * TILE * 0.4);
-        ctx.fillStyle = '#ffcc44';
-        ctx.font = `bold ${Math.floor(TILE * 0.4)}px sans-serif`;
-        ctx.fillText(txt().bossAppear(wave), W / 2, ROWS * TILE * 0.55);
+        ctx.fillText(warnText, W / 2, ROWS * TILE * 0.4);
+        if (waveType === 'boss') {
+            ctx.fillStyle = '#ffcc44';
+            ctx.font = `bold ${Math.floor(TILE * 0.4)}px sans-serif`;
+            ctx.fillText(txt().bossAppear(wave), W / 2, ROWS * TILE * 0.55);
+        }
         ctx.globalAlpha = 1;
         ctx.textBaseline = 'alphabetic';
     }
 
-    // Tower selection buttons
+    // Tower selection buttons — UI_PAD 패딩, 동일 너비/간격, 모던 스타일
     const tBtnY = uiY + TILE * 0.95;
     const tBtnH = TILE * 1.5;
-    const btnW = Math.floor((W - 10) / TOWER_TYPES.length) - 6;
-    const btnStartX = 8;
+    const tBtnGap = Math.max(6, Math.floor(TILE * 0.12));
+    const tBtnAvail = W - UI_PAD * 2 - tBtnGap * (TOWER_TYPES.length - 1);
+    const btnW = Math.floor(tBtnAvail / TOWER_TYPES.length);
+    const btnStartX = UI_PAD;
+    const innerPad = Math.max(8, Math.floor(TILE * 0.15));
 
     for (let i = 0; i < TOWER_TYPES.length; i++) {
         const type = TOWER_TYPES[i];
-        const bx = btnStartX + i * (btnW + 6);
+        const bx = btnStartX + i * (btnW + tBtnGap);
         const isSelected = i === selectedTower;
         const canAfford = gold >= type.cost;
 
         // Check hover
         const isHovered = mousePos.x >= bx && mousePos.x <= bx + btnW && mousePos.y >= tBtnY && mousePos.y <= tBtnY + tBtnH;
 
-        // Button background
-        drawRoundRect(bx, tBtnY, btnW, tBtnH, 6);
-        ctx.fillStyle = isSelected ? '#2a3a5a' : isHovered ? '#222244' : '#1a1a30';
-        ctx.fill();
+        // Button background (그라디언트 + 테두리)
         if (isSelected) {
             ctx.save();
             ctx.shadowColor = type.color;
-            ctx.shadowBlur = 8;
+            ctx.shadowBlur = 14;
+            drawRoundRect(bx, tBtnY, btnW, tBtnH, 8);
+            const selGrad = ctx.createLinearGradient(0, tBtnY, 0, tBtnY + tBtnH);
+            selGrad.addColorStop(0, 'rgba(60,75,120,0.95)');
+            selGrad.addColorStop(1, 'rgba(30,40,70,0.95)');
+            ctx.fillStyle = selGrad;
+            ctx.fill();
+            ctx.restore();
             ctx.strokeStyle = type.color;
             ctx.lineWidth = 2;
+            drawRoundRect(bx, tBtnY, btnW, tBtnH, 8);
             ctx.stroke();
-            ctx.restore();
         } else {
-            ctx.strokeStyle = isHovered ? '#444466' : '#333355';
+            drawRoundRect(bx, tBtnY, btnW, tBtnH, 8);
+            const bgGrad = ctx.createLinearGradient(0, tBtnY, 0, tBtnY + tBtnH);
+            if (isHovered) {
+                bgGrad.addColorStop(0, 'rgba(50,55,90,0.9)');
+                bgGrad.addColorStop(1, 'rgba(30,35,65,0.9)');
+            } else {
+                bgGrad.addColorStop(0, 'rgba(35,40,65,0.85)');
+                bgGrad.addColorStop(1, 'rgba(22,25,48,0.85)');
+            }
+            ctx.fillStyle = bgGrad;
+            ctx.fill();
+            ctx.strokeStyle = isHovered ? 'rgba(120,140,180,0.5)' : 'rgba(70,80,110,0.45)';
             ctx.lineWidth = 1;
             ctx.stroke();
         }
+        // 상단 광택
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        drawRoundRect(bx, tBtnY, btnW, tBtnH * 0.35, { tl: 8, tr: 8, bl: 0, br: 0 });
+        ctx.fill();
 
-        // Tower icon
-        const iconX = bx + btnW * 0.2;
-        const iconY = tBtnY + tBtnH * 0.38;
+        // 타워 아이콘 — 좌측 고정 너비 영역 (30%)
+        const iconZoneW = Math.floor(btnW * 0.3);
+        const iconX = bx + innerPad + iconZoneW / 2 - innerPad / 2;
+        const iconY = tBtnY + tBtnH * 0.5;
         ctx.save();
-        const iconScale = TILE * 0.015;
-        drawTowerIcon(iconX, iconY, i, iconScale);
+        const iconScale = Math.max(0.7, TILE * 0.018);
+        drawTowerIcon(iconX, iconY - tBtnH * 0.1, i, iconScale);
         ctx.restore();
 
-        // Tower name
-        ctx.fillStyle = canAfford ? '#ddd' : '#666';
-        ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+        // 텍스트 영역 (좌측 아이콘 다음부터 우측 패딩까지)
+        const textX = bx + innerPad + iconZoneW + innerPad / 2;
+        const textMaxW = bx + btnW - innerPad - textX;
+
+        // 타워 이름
+        ctx.fillStyle = canAfford ? '#ffffff' : '#556';
+        ctx.font = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`;
         ctx.textAlign = 'left';
-        ctx.fillText(txt().towerShort[type.nameKey], bx + btnW * 0.38, tBtnY + tBtnH * 0.3);
+        ctx.textBaseline = 'middle';
+        // 이름이 길면 폰트 축소
+        let nameText = txt().towerShort[type.nameKey];
+        let nfs = Math.floor(TILE * 0.3);
+        while (ctx.measureText(nameText).width > textMaxW && nfs > 10) {
+            nfs -= 1;
+            ctx.font = `bold ${nfs}px "Segoe UI", system-ui, sans-serif`;
+        }
+        ctx.fillText(nameText, textX, tBtnY + tBtnH * 0.3);
 
-        // Cost
+        // 비용 (골드 아이콘 + 숫자)
         ctx.fillStyle = canAfford ? '#ffdd44' : '#664422';
-        ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
-        ctx.fillText(`${type.cost}G`, bx + btnW * 0.38, tBtnY + tBtnH * 0.55);
+        ctx.font = `bold ${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${type.cost}G`, textX, tBtnY + tBtnH * 0.55);
 
-        // Desc
-        ctx.fillStyle = '#888';
-        ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
-        ctx.fillText(txt().towerDesc[type.nameKey], bx + btnW * 0.38, tBtnY + tBtnH * 0.78);
+        // 설명
+        ctx.fillStyle = canAfford ? '#9aa3c0' : '#556';
+        ctx.font = `${Math.floor(TILE * 0.2)}px "Segoe UI", system-ui, sans-serif`;
+        let descText = txt().towerDesc[type.nameKey];
+        let dfs = Math.floor(TILE * 0.2);
+        while (ctx.measureText(descText).width > textMaxW && dfs > 8) {
+            dfs -= 1;
+            ctx.font = `${dfs}px "Segoe UI", system-ui, sans-serif`;
+        }
+        ctx.fillText(descText, textX, tBtnY + tBtnH * 0.78);
 
-        // Keyboard hint (모바일에서는 숨김)
+        // 키보드 힌트 (우측 상단, 데스크톱만)
         if (!isMobile) {
-            ctx.fillStyle = '#444466';
-            ctx.font = `${Math.floor(TILE * 0.22)}px sans-serif`;
+            ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.4)' : 'rgba(120,130,160,0.5)';
+            ctx.font = `bold ${Math.floor(TILE * 0.2)}px "Segoe UI", system-ui, sans-serif`;
             ctx.textAlign = 'right';
-            ctx.fillText(`[${i + 1}]`, bx + btnW - 6, tBtnY + tBtnH * 0.85);
+            ctx.textBaseline = 'top';
+            ctx.fillText(`${i + 1}`, bx + btnW - innerPad, tBtnY + innerPad * 0.6);
         }
     }
+    ctx.textBaseline = 'alphabetic';
 
-    // Upgrade panel
+    // Upgrade panel — 넉넉한 너비 + 좌우 패딩 + 오버플로 방지
     if (showUpgradeFor) {
         const t = showUpgradeFor;
-        const panelW = Math.min(W * 0.5, 220);
-        const panelH = TILE * 2.8;
+        const panelPad = Math.max(12, Math.floor(TILE * 0.25));
+        const rowGap = Math.max(6, Math.floor(TILE * 0.12));
+        const lineH = Math.floor(TILE * 0.34);
+        const btnH = Math.max(32, Math.floor(TILE * 0.7));
+
+        // 텍스트 폭 측정해서 패널 너비 결정 (최소/최대 한계)
+        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", system-ui, sans-serif`;
+        const titleStr = `${txt().towerNames[t.type.nameKey]} · Lv.${t.level}`;
+        const titleW = ctx.measureText(titleStr).width;
+
+        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+        const atkLine = `${txt().atk} ${t.damage}`;
+        const rngLine = `${txt().range} ${t.range.toFixed(1)}`;
+        const rateLine = `${txt().atkSpeed} ${t.fireRate.toFixed(2)}s`;
+        const dmgLine = `${txt().totalDmg} ${t.totalDamage}`;
+        const row1W = Math.max(ctx.measureText(atkLine).width, ctx.measureText(rateLine).width);
+        const row2W = Math.max(ctx.measureText(rngLine).width, ctx.measureText(dmgLine).width);
+        const statsW = row1W + row2W + Math.max(14, Math.floor(TILE * 0.3));
+
+        // 버튼 라벨 측정: 모든 가능한 라벨(업그레이드, MAX LEVEL, 판매)의 최대 너비 기준
+        const btnFontSize = Math.floor(TILE * 0.26);
+        ctx.font = `bold ${btnFontSize}px "Segoe UI", system-ui, sans-serif`;
+        const upLabel = t.level < 5 ? txt().upgrade(t.upgradeCost) : txt().maxLevel;
+        const sellLabel = txt().sell(t.sellValue);
+        const allLabels = [upLabel, sellLabel, txt().maxLevel];
+        const maxLabelW = Math.max(...allLabels.map(l => ctx.measureText(l).width));
+        const btnPadH = Math.max(18, Math.floor(TILE * 0.35));
+        const btnMinW = Math.ceil(maxLabelW + btnPadH * 2);  // 좌우 패딩 대칭
+        const btnsRowW = btnMinW * 2 + Math.max(10, Math.floor(TILE * 0.2));
+
+        // 최종 패널 너비: 내용 최대 + 패딩. 화면의 85%까지 허용
+        const contentW = Math.max(titleW, statsW, btnsRowW);
+        const panelW = Math.min(W - 16, contentW + panelPad * 2);
+        const panelH = Math.floor(TILE * 0.55) + lineH * 3 + btnH + rowGap * 3 + panelPad * 2;
+
         let panelX = t.x - panelW / 2;
         let panelY = t.y - panelH - TILE * 0.6;
-        if (panelY < 5) panelY = t.y + TILE * 0.6;
-        if (panelX < 5) panelX = 5;
-        if (panelX + panelW > W - 5) panelX = W - panelW - 5;
+        if (panelY < 6) panelY = t.y + TILE * 0.6;
+        if (panelX < 6) panelX = 6;
+        if (panelX + panelW > W - 6) panelX = W - panelW - 6;
 
-        // Panel bg
-        drawRoundRect(panelX, panelY, panelW, panelH, 8);
-        ctx.fillStyle = 'rgba(20,20,40,0.95)';
+        // 그림자
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 20;
+        ctx.shadowOffsetY = 4;
+        drawRoundRect(panelX, panelY, panelW, panelH, 12);
+        const bgGrad = ctx.createLinearGradient(0, panelY, 0, panelY + panelH);
+        bgGrad.addColorStop(0, 'rgba(30,35,58,0.97)');
+        bgGrad.addColorStop(1, 'rgba(18,20,38,0.97)');
+        ctx.fillStyle = bgGrad;
         ctx.fill();
+        ctx.restore();
+        // 테두리 (타워 색상 악센트)
         ctx.strokeStyle = t.type.color;
         ctx.lineWidth = 2;
+        drawRoundRect(panelX, panelY, panelW, panelH, 12);
+        ctx.stroke();
+        // 상단 라인 악센트
+        ctx.fillStyle = t.type.color;
+        ctx.globalAlpha = 0.3;
+        drawRoundRect(panelX, panelY, panelW, 3, { tl: 12, tr: 12, bl: 0, br: 0 });
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // 타이틀
+        let py = panelY + panelPad;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = t.type.color;
+        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillText(titleStr, panelX + panelPad, py);
+        py += Math.floor(TILE * 0.5) + rowGap;
+
+        // 구분선
+        ctx.strokeStyle = 'rgba(120,180,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(panelX + panelPad, py - rowGap / 2);
+        ctx.lineTo(panelX + panelW - panelPad, py - rowGap / 2);
         ctx.stroke();
 
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        let py = panelY + 8;
-        const px = panelX + 10;
+        // 스탯 (2열 그리드)
+        const col1X = panelX + panelPad;
+        const col2X = panelX + panelW - panelPad - row2W;
+        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillStyle = '#aab4d0';
+        ctx.fillText(txt().atk + ' ', col1X, py);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(t.damage + '', col1X + ctx.measureText(txt().atk + ' ').width, py);
+        ctx.fillStyle = '#aab4d0';
+        ctx.fillText(txt().range + ' ', col2X, py);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(t.range.toFixed(1), col2X + ctx.measureText(txt().range + ' ').width, py);
+        py += lineH;
 
-        // Tower name and level
-        ctx.fillStyle = t.type.color;
-        ctx.font = `bold ${Math.floor(TILE * 0.35)}px sans-serif`;
-        ctx.fillText(`${txt().towerNames[t.type.nameKey]} Lv.${t.level}`, px, py);
-        py += TILE * 0.45;
+        ctx.fillStyle = '#aab4d0';
+        ctx.fillText(txt().atkSpeed + ' ', col1X, py);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(t.fireRate.toFixed(2) + 's', col1X + ctx.measureText(txt().atkSpeed + ' ').width, py);
+        ctx.fillStyle = '#aab4d0';
+        ctx.fillText(txt().totalDmg + ' ', col2X, py);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(t.totalDamage + '', col2X + ctx.measureText(txt().totalDmg + ' ').width, py);
+        py += lineH + rowGap;
 
-        // Stats
-        ctx.fillStyle = '#bbb';
-        ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
-        ctx.fillText(`${txt().atk}: ${t.damage}  ${txt().range}: ${t.range.toFixed(1)}`, px, py);
-        py += TILE * 0.34;
-        ctx.fillText(`${txt().atkSpeed}: ${t.fireRate.toFixed(2)}s  ${txt().totalDmg}: ${t.totalDamage}`, px, py);
-        py += TILE * 0.42;
+        // 버튼 영역 (업그레이드 + 판매) — 모두 동일 너비, 동일 패딩
+        const availBtnW = panelW - panelPad * 2;
+        const btnGap2 = Math.max(10, Math.floor(TILE * 0.2));
+        const oneBtnW = Math.floor((availBtnW - btnGap2) / 2);
+        const upBtnX = panelX + panelPad;
+        const sellBtnX = upBtnX + oneBtnW + btnGap2;
+        const btnsY = py;
 
-        // Upgrade button
-        if (t.level < 5) {
-            const ubw = panelW * 0.44;
-            const ubh = TILE * 0.65;
-            const ubx = px;
-            const uby = py;
-            const canUp = gold >= t.upgradeCost;
-
-            drawRoundRect(ubx, uby, ubw, ubh, 4);
-            ctx.fillStyle = canUp ? '#2a4a2a' : '#2a2a2a';
+        // 공통 버튼 렌더링 (업그레이드/판매/MAX LEVEL 동일 스타일)
+        function drawActionBtn(bx, by, bw, bh, variant, label, enabled) {
+            // variant: 'upgrade' | 'sell' | 'max'
+            let bgA, bgB, borderColor, textColor, glowColor;
+            if (variant === 'upgrade') {
+                bgA = enabled ? 'rgba(80,180,90,0.9)' : 'rgba(60,60,70,0.85)';
+                bgB = enabled ? 'rgba(45,130,60,0.9)' : 'rgba(40,40,50,0.85)';
+                borderColor = enabled ? 'rgba(140,255,150,0.7)' : 'rgba(100,100,110,0.5)';
+                textColor = enabled ? '#ffffff' : '#888';
+                glowColor = enabled ? 'rgba(80,220,90,0.4)' : null;
+            } else if (variant === 'sell') {
+                bgA = 'rgba(200,70,70,0.85)';
+                bgB = 'rgba(130,35,35,0.85)';
+                borderColor = 'rgba(255,120,120,0.6)';
+                textColor = '#ffffff';
+                glowColor = null;
+            } else { // max
+                bgA = 'rgba(220,180,40,0.28)';
+                bgB = 'rgba(160,120,20,0.22)';
+                borderColor = 'rgba(255,220,68,0.55)';
+                textColor = '#ffdd66';
+                glowColor = 'rgba(255,200,60,0.35)';
+            }
+            // 버튼 배경
+            if (glowColor) {
+                ctx.save();
+                ctx.shadowColor = glowColor;
+                ctx.shadowBlur = 10;
+            }
+            drawRoundRect(bx, by, bw, bh, 8);
+            const g = ctx.createLinearGradient(0, by, 0, by + bh);
+            g.addColorStop(0, bgA);
+            g.addColorStop(1, bgB);
+            ctx.fillStyle = g;
             ctx.fill();
-            ctx.strokeStyle = canUp ? '#44bb44' : '#444';
-            ctx.lineWidth = 1;
+            if (glowColor) ctx.restore();
+            // 테두리
+            ctx.strokeStyle = borderColor;
+            ctx.lineWidth = 1.5;
+            drawRoundRect(bx, by, bw, bh, 8);
             ctx.stroke();
-
-            ctx.fillStyle = canUp ? '#88ff88' : '#666';
-            ctx.font = `bold ${Math.floor(TILE * 0.26)}px sans-serif`;
+            // 상단 광택
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            drawRoundRect(bx, by, bw, bh * 0.5, { tl: 8, tr: 8, bl: 0, br: 0 });
+            ctx.fill();
+            // 라벨 (동일 폰트, 동일 좌우 패딩, 넘치면 자동 축소)
+            ctx.fillStyle = textColor;
+            let fs = btnFontSize;
+            ctx.font = `bold ${fs}px "Segoe UI", system-ui, sans-serif`;
+            const innerW = bw - btnPadH * 2;
+            while (ctx.measureText(label).width > innerW && fs > 10) {
+                fs -= 1;
+                ctx.font = `bold ${fs}px "Segoe UI", system-ui, sans-serif`;
+            }
             ctx.textAlign = 'center';
-            ctx.fillText(txt().upgrade(t.upgradeCost), ubx + ubw / 2, uby + ubh * 0.25);
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, bx + bw / 2, by + bh / 2 + 1);
+        }
 
-            // Store button position for click detection
-            t._upgradeBtn = { x: ubx, y: uby, w: ubw, h: ubh };
+        // Upgrade / MAX LEVEL 버튼
+        if (t.level < 5) {
+            const canUp = gold >= t.upgradeCost;
+            drawActionBtn(upBtnX, btnsY, oneBtnW, btnH, 'upgrade', upLabel, canUp);
+            t._upgradeBtn = { x: upBtnX, y: btnsY, w: oneBtnW, h: btnH };
         } else {
-            ctx.fillStyle = '#ffdd44';
-            ctx.font = `bold ${Math.floor(TILE * 0.28)}px sans-serif`;
-            ctx.textAlign = 'left';
-            ctx.fillText(txt().maxLevel, px, py);
+            drawActionBtn(upBtnX, btnsY, oneBtnW, btnH, 'max', upLabel, true);
             t._upgradeBtn = null;
         }
 
-        // Sell button
-        const sbw = panelW * 0.38;
-        const sbh = TILE * 0.65;
-        const sbx = panelX + panelW - sbw - 10;
-        const sby = py;
+        // Sell 버튼
+        drawActionBtn(sellBtnX, btnsY, oneBtnW, btnH, 'sell', sellLabel, true);
+        t._sellBtn = { x: sellBtnX, y: btnsY, w: oneBtnW, h: btnH };
 
-        drawRoundRect(sbx, sby, sbw, sbh, 4);
-        ctx.fillStyle = '#4a2a2a';
-        ctx.fill();
-        ctx.strokeStyle = '#cc4444';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        ctx.fillStyle = '#ff8888';
-        ctx.font = `bold ${Math.floor(TILE * 0.26)}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText(txt().sell(t.sellValue), sbx + sbw / 2, sby + sbh * 0.25);
-
-        t._sellBtn = { x: sbx, y: sby, w: sbw, h: sbh };
+        // baseline 복원
+        ctx.textBaseline = 'alphabetic';
     }
 
-    // Wave countdown / start prompt
+    // Wave countdown / start prompt — 모던 CTA 스타일
     if (betweenWaves && !gameOver) {
         const countdown = Math.ceil(waveCountdown);
-        // 텍스트 너비 측정 후 동적 박스 크기 결정
-        ctx.font = `bold ${Math.floor(TILE * 0.38)}px sans-serif`;
-        let promptLines;
-        if (wave === 0) {
-            promptLines = [isMobile ? txt().startPromptMobile : txt().startPrompt];
-        } else {
-            promptLines = [txt().nextWave(countdown), isMobile ? txt().skipPromptMobile : txt().skipPrompt];
-        }
-        let maxTextW = 0;
-        for (const line of promptLines) {
-            const tw = ctx.measureText(line).width;
-            if (tw > maxTextW) maxTextW = tw;
-        }
-        const boxPad = TILE * 0.5;
-        const boxW = Math.max(TILE * 4, maxTextW + boxPad * 2);
-        const boxX = W / 2 - boxW / 2;
+        const isStart = wave === 0;
 
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        drawRoundRect(boxX, TILE * 0.3, boxW, TILE * 1.2, 8);
+        // 메인 라벨 / 힌트 분리
+        let mainLabel, hintLabel;
+        if (isStart) {
+            mainLabel = (lang === 'ko' ? '시작' : 'Start');
+            hintLabel = isMobile ? (lang === 'ko' ? '탭하세요' : 'Tap to begin')
+                                  : (lang === 'ko' ? 'Space / Tap' : 'Space / Tap');
+        } else {
+            mainLabel = (lang === 'ko' ? `웨이브 ${wave + 1} · ${countdown}초` : `Wave ${wave + 1} · ${countdown}s`);
+            hintLabel = isMobile ? (lang === 'ko' ? '탭하여 스킵' : 'Tap to skip')
+                                 : (lang === 'ko' ? 'Space / Tap to skip' : 'Space / Tap to skip');
+        }
+
+        // 측정
+        const mainFS = Math.floor(TILE * 0.42);
+        const hintFS = Math.floor(TILE * 0.22);
+        ctx.font = `bold ${mainFS}px "Segoe UI", system-ui, sans-serif`;
+        const mainW = ctx.measureText(mainLabel).width;
+        ctx.font = `${hintFS}px "Segoe UI", system-ui, sans-serif`;
+        const hintW = ctx.measureText(hintLabel).width;
+        const innerW = Math.max(mainW, hintW);
+
+        // 아이콘 공간
+        const iconW = Math.floor(TILE * 0.55);
+        const boxPad = Math.max(16, Math.floor(TILE * 0.35));
+        const boxW = innerW + iconW + boxPad * 2 + 10;
+        const boxH = Math.floor(TILE * 1.35);
+        const boxX = Math.floor(W / 2 - boxW / 2);
+        const boxY = Math.floor(TILE * 0.35);
+
+        // 맥박 (scale + alpha)
+        const pulseT = 0.5 + Math.sin(Date.now() / 400) * 0.5;
+
+        // 외곽 글로우
+        ctx.save();
+        ctx.shadowColor = isStart ? 'rgba(100,200,140,0.8)' : 'rgba(100,180,255,0.7)';
+        ctx.shadowBlur = 20 + pulseT * 10;
+        drawRoundRect(boxX, boxY, boxW, boxH, boxH / 2);
+        const bg = ctx.createLinearGradient(0, boxY, 0, boxY + boxH);
+        if (isStart) {
+            bg.addColorStop(0, 'rgba(60,140,85,0.95)');
+            bg.addColorStop(1, 'rgba(30,90,50,0.95)');
+        } else {
+            bg.addColorStop(0, 'rgba(50,80,140,0.95)');
+            bg.addColorStop(1, 'rgba(25,45,90,0.95)');
+        }
+        ctx.fillStyle = bg;
+        ctx.fill();
+        ctx.restore();
+
+        // 상단 하이라이트 (광택)
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        drawRoundRect(boxX, boxY, boxW, boxH * 0.4, { tl: boxH / 2, tr: boxH / 2, bl: 0, br: 0 });
         ctx.fill();
 
-        ctx.fillStyle = '#88ccff';
-        ctx.font = `bold ${Math.floor(TILE * 0.38)}px sans-serif`;
-        ctx.textAlign = 'center';
+        // 외곽 테두리 (부드러운 액센트)
+        ctx.strokeStyle = isStart ? 'rgba(160,255,180,0.6)' : 'rgba(150,200,255,0.55)';
+        ctx.lineWidth = 1.5;
+        drawRoundRect(boxX, boxY, boxW, boxH, boxH / 2);
+        ctx.stroke();
+
+        // 왼쪽 아이콘 (▶ 삼각형)
+        const iconCX = boxX + boxPad + iconW / 2;
+        const iconCY = boxY + boxH / 2;
+        ctx.save();
+        ctx.shadowColor = isStart ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.6)';
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = '#ffffff';
+        const tr = iconW * 0.4;
+        ctx.beginPath();
+        ctx.moveTo(iconCX - tr * 0.5, iconCY - tr * 0.9);
+        ctx.lineTo(iconCX + tr, iconCY);
+        ctx.lineTo(iconCX - tr * 0.5, iconCY + tr * 0.9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // 메인 라벨
+        const textX = boxX + boxPad + iconW + 10;
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        if (wave === 0) {
-            ctx.fillText(promptLines[0], W / 2, TILE * 0.9);
-        } else {
-            ctx.fillText(promptLines[0], W / 2, TILE * 0.7);
-            ctx.font = `${Math.floor(TILE * 0.26)}px sans-serif`;
-            ctx.fillStyle = '#aaa';
-            ctx.fillText(promptLines[1], W / 2, TILE * 1.15);
-        }
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${mainFS}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillText(mainLabel, textX, boxY + boxH * 0.38);
+
+        // 힌트 라벨
+        ctx.fillStyle = isStart ? 'rgba(200,255,220,0.75)' : 'rgba(200,220,255,0.75)';
+        ctx.font = `${hintFS}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillText(hintLabel, textX, boxY + boxH * 0.75);
+
+        ctx.textBaseline = 'alphabetic';
     }
 
-    // Game over overlay (animated)
+    // Game over overlay — 모던 UI
     if (gameOver) {
         const got = gameOverTimer;
-        // Darken
-        const darkAlpha = Math.min(0.75, got * 1.5);
-        ctx.fillStyle = `rgba(0,0,0,${darkAlpha})`;
+        // 부드러운 라디얼 어둠 (중앙은 살짝 어둡고, 가장자리 더 진함)
+        const darkAlpha = Math.min(0.78, got * 1.4);
+        const vignette = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.7);
+        vignette.addColorStop(0, `rgba(5,8,20,${darkAlpha * 0.75})`);
+        vignette.addColorStop(1, `rgba(0,0,5,${darkAlpha})`);
+        ctx.fillStyle = vignette;
         ctx.fillRect(0, 0, W, H);
 
-        if (got > 0.5) {
-            // GAME OVER text - scale in
-            const textT = Math.min(1, (got - 0.5) / 0.3);
-            const scale = 0.5 + textT * 0.5;
+        // 중앙 모달 패널 크기/위치 계산
+        const panelW = Math.min(W * 0.85, TILE * 10);
+        const panelH = Math.min(H * 0.7, TILE * 7.5);
+        const panelX = W / 2 - panelW / 2;
+        const panelY = H / 2 - panelH / 2;
+
+        // 패널 Fade-in
+        const panelT = Math.min(1, got / 0.6);
+        if (got > 0.3) {
             ctx.save();
-            ctx.translate(W / 2, H * 0.32);
+            ctx.globalAlpha = panelT;
+            // 패널 그림자
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 30;
+            drawRoundRect(panelX, panelY, panelW, panelH, 18);
+            const panelGrad = ctx.createLinearGradient(0, panelY, 0, panelY + panelH);
+            panelGrad.addColorStop(0, 'rgba(30,34,60,0.98)');
+            panelGrad.addColorStop(1, 'rgba(15,18,38,0.98)');
+            ctx.fillStyle = panelGrad;
+            ctx.fill();
+            ctx.restore();
+
+            // 테두리 + 상단 액센트
+            ctx.save();
+            ctx.globalAlpha = panelT;
+            ctx.strokeStyle = 'rgba(255,80,80,0.5)';
+            ctx.lineWidth = 2;
+            drawRoundRect(panelX, panelY, panelW, panelH, 18);
+            ctx.stroke();
+            // 상단 빨간 라인
+            ctx.fillStyle = 'rgba(255,70,70,0.65)';
+            drawRoundRect(panelX, panelY, panelW, 4, { tl: 18, tr: 18, bl: 0, br: 0 });
+            ctx.fill();
+            // 상단 광택
+            ctx.fillStyle = 'rgba(255,255,255,0.04)';
+            drawRoundRect(panelX, panelY, panelW, panelH * 0.35, { tl: 18, tr: 18, bl: 0, br: 0 });
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // GAME OVER 타이틀 (scale-in + 글로우 + 그라디언트)
+        if (got > 0.5) {
+            const textT = Math.min(1, (got - 0.5) / 0.35);
+            const scale = 0.55 + textT * 0.45;
+            ctx.save();
+            ctx.translate(W / 2, panelY + panelH * 0.16);
             ctx.scale(scale, scale);
-            ctx.fillStyle = '#ff4444';
-            ctx.font = `bold ${Math.floor(TILE * 0.85)}px sans-serif`;
+            ctx.globalAlpha = textT;
+            ctx.shadowColor = '#ff4040';
+            ctx.shadowBlur = 30;
+            // 빨강→진빨강 그라디언트
+            const titleGrad = ctx.createLinearGradient(0, -TILE * 0.5, 0, TILE * 0.5);
+            titleGrad.addColorStop(0, '#ff6060');
+            titleGrad.addColorStop(1, '#cc2828');
+            ctx.fillStyle = titleGrad;
+            ctx.font = `900 ${Math.floor(TILE * 0.85)}px "Segoe UI", system-ui, sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.globalAlpha = textT;
             ctx.fillText(txt().gameOver, 0, 0);
             ctx.restore();
             ctx.globalAlpha = 1;
         }
 
-        if (got > 1.2) {
-            // Score count-up
+        // 점수 카드
+        if (got > 1.0) {
+            const cardT = Math.min(1, (got - 1.0) / 0.4);
             const scoreT = Math.min(1, (got - 1.2) / 0.8);
             const displayScore = Math.floor(score * scoreT);
-            ctx.fillStyle = '#ddd';
-            ctx.font = `${Math.floor(TILE * 0.4)}px sans-serif`;
+
+            // 점수 카드 (패널 안 중앙)
+            const cardW = panelW * 0.75;
+            const cardH = TILE * 1.7;
+            const cardX = W / 2 - cardW / 2;
+            const cardY = panelY + panelH * 0.32;
+
+            ctx.save();
+            ctx.globalAlpha = cardT;
+            drawRoundRect(cardX, cardY, cardW, cardH, 12);
+            const cardGrad = ctx.createLinearGradient(0, cardY, 0, cardY + cardH);
+            cardGrad.addColorStop(0, 'rgba(50,55,90,0.6)');
+            cardGrad.addColorStop(1, 'rgba(25,30,55,0.6)');
+            ctx.fillStyle = cardGrad;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(120,160,220,0.3)';
+            ctx.lineWidth = 1;
+            drawRoundRect(cardX, cardY, cardW, cardH, 12);
+            ctx.stroke();
+
+            // 카드 내부 2분할: 웨이브 / 점수
+            const half = cardW / 2;
+            const labelColor = '#aab4d0';
+            const valueColor = '#ffffff';
+
+            // 웨이브
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(txt().waveScore(wave, displayScore), W / 2, H * 0.43);
+            ctx.fillStyle = labelColor;
+            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.fillText(lang === 'ko' ? '웨이브' : 'WAVE', cardX + half * 0.5, cardY + cardH * 0.3);
+            ctx.fillStyle = '#88ccff';
+            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.fillText(`${wave}`, cardX + half * 0.5, cardY + cardH * 0.65);
 
-            // High score (try/catch for incognito mode - Poki requirement)
+            // 세로 구분선
+            ctx.strokeStyle = 'rgba(120,160,220,0.25)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(cardX + half, cardY + cardH * 0.2);
+            ctx.lineTo(cardX + half, cardY + cardH * 0.8);
+            ctx.stroke();
+
+            // 점수
+            ctx.fillStyle = labelColor;
+            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.fillText(lang === 'ko' ? '점수' : 'SCORE', cardX + half + half * 0.5, cardY + cardH * 0.3);
+            ctx.fillStyle = '#ffdd44';
+            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.fillText(`${displayScore}`, cardX + half + half * 0.5, cardY + cardH * 0.65);
+            ctx.restore();
+
+            // 최고 점수 (카드 아래 작은 뱃지)
             let hs = 0;
-            try { hs = localStorage.getItem('td_highscore') || 0; } catch(e) {}
-            if (score > hs) {
+            try { hs = parseInt(localStorage.getItem('td_highscore') || '0', 10); } catch(e) {}
+            const isNewHigh = score > hs;
+            if (isNewHigh && scoreT > 0.9) {
                 try { localStorage.setItem('td_highscore', score); } catch(e) {}
-                ctx.fillStyle = '#ffdd44';
-                ctx.font = `bold ${Math.floor(TILE * 0.32)}px sans-serif`;
-                ctx.fillText(txt().newHighScore, W / 2, H * 0.5);
-            } else {
-                ctx.fillStyle = '#888';
-                ctx.font = `${Math.floor(TILE * 0.28)}px sans-serif`;
-                ctx.fillText(txt().highScore(hs), W / 2, H * 0.5);
             }
+            const hsY = cardY + cardH + TILE * 0.3;
+            ctx.save();
+            ctx.globalAlpha = cardT;
+            if (isNewHigh) {
+                ctx.shadowColor = '#ffcc44';
+                ctx.shadowBlur = 10 + Math.sin(Date.now() / 200) * 5;
+                ctx.fillStyle = '#ffdd55';
+                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", system-ui, sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillText('🏆 ' + txt().newHighScore.replace(/🏆\s*/, ''), W / 2, hsY);
+            } else {
+                ctx.fillStyle = '#8890a8';
+                ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillText(txt().highScore(hs), W / 2, hsY);
+            }
+            ctx.restore();
         }
 
-        if (got > 2.0) {
-            // 재시작 버튼 공통 스타일 (둥근 사각형)
-            const rstBtnW = TILE * 4;
-            const rstBtnH = TILE * 0.85;
-            const rstBtnX = W / 2 - rstBtnW / 2;
+        // 버튼 영역
+        if (got > 1.8) {
+            const btnsT = Math.min(1, (got - 1.8) / 0.4);
+            const btnW = panelW * 0.75;
+            const btnH = Math.max(44, Math.floor(TILE * 0.9));
+            const btnX = W / 2 - btnW / 2;
+            const btnsY = panelY + panelH * 0.68;
+            const btnGapV = Math.max(10, Math.floor(TILE * 0.18));
 
-            // 보상형 광고 부활 버튼
-            if (showRewardedAdOption) {
-                const rbw = TILE * 5;
-                const rbh = TILE * 0.9;
-                const rbx = W / 2 - rbw / 2;
-                const rby = H * 0.54;
-                ctx.fillStyle = '#2a5a2a';
-                drawRoundRect(rbx, rby, rbw, rbh, 8);
+            ctx.save();
+            ctx.globalAlpha = btnsT;
+
+            // 공통 CTA 버튼 렌더링
+            function drawCTA(bx, by, bw, bh, variant, icon, label, pulse) {
+                let bgA, bgB, borderColor, textColor, glow;
+                if (variant === 'revive') {
+                    bgA = 'rgba(70,160,80,0.95)';
+                    bgB = 'rgba(40,110,50,0.95)';
+                    borderColor = 'rgba(140,255,150,0.7)';
+                    textColor = '#ffffff';
+                    glow = 'rgba(70,220,100,0.5)';
+                } else {
+                    bgA = 'rgba(55,90,150,0.95)';
+                    bgB = 'rgba(30,55,100,0.95)';
+                    borderColor = 'rgba(140,200,255,0.65)';
+                    textColor = '#ffffff';
+                    glow = 'rgba(100,180,255,0.45)';
+                }
+                // 그림자 + 글로우
+                ctx.save();
+                ctx.shadowColor = glow;
+                ctx.shadowBlur = 14 + (pulse ? Math.sin(Date.now() / 300) * 6 : 0);
+                drawRoundRect(bx, by, bw, bh, bh / 2);
+                const g = ctx.createLinearGradient(0, by, 0, by + bh);
+                g.addColorStop(0, bgA);
+                g.addColorStop(1, bgB);
+                ctx.fillStyle = g;
                 ctx.fill();
-                ctx.strokeStyle = '#44cc44';
-                ctx.lineWidth = 2;
-                drawRoundRect(rbx, rby, rbw, rbh, 8);
+                ctx.restore();
+                // 테두리
+                ctx.strokeStyle = borderColor;
+                ctx.lineWidth = 1.5;
+                drawRoundRect(bx, by, bw, bh, bh / 2);
                 ctx.stroke();
-                ctx.fillStyle = '#44ff44';
-                ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
+                // 상단 하이라이트
+                ctx.fillStyle = 'rgba(255,255,255,0.18)';
+                drawRoundRect(bx, by, bw, bh * 0.45, { tl: bh / 2, tr: bh / 2, bl: 0, br: 0 });
+                ctx.fill();
+                // 아이콘 + 라벨 (중앙)
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(txt().reviveAd, W / 2, rby + rbh / 2);
-                window._rewardedAdBtn = { x: rbx, y: rby, w: rbw, h: rbh };
+                ctx.fillStyle = textColor;
+                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", system-ui, sans-serif`;
+                const fullText = (icon ? icon + '  ' : '') + label;
+                ctx.fillText(fullText, bx + bw / 2, by + bh / 2 + 1);
+            }
 
-                // 다시 시작 버튼 (광고 버튼 아래, 둥근 사각형)
-                const rstBtnY = rby + rbh + TILE * 0.35;
-                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
-                ctx.fillStyle = '#1a2a4a';
-                ctx.fill();
-                ctx.strokeStyle = '#4488cc';
-                ctx.lineWidth = 2;
-                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
-                ctx.stroke();
-                ctx.fillStyle = '#88ccff';
-                ctx.font = `bold ${Math.floor(TILE * 0.3)}px sans-serif`;
-                ctx.fillText(txt().restartBtn, W / 2, rstBtnY + rstBtnH / 2);
-                window._restartBtn = { x: rstBtnX, y: rstBtnY, w: rstBtnW, h: rstBtnH };
+            if (showRewardedAdOption) {
+                // 부활 CTA (위, 맥박)
+                drawCTA(btnX, btnsY, btnW, btnH, 'revive', '🎬',
+                    lang === 'ko' ? '광고 보고 부활 +5HP' : 'Watch Ad · +5 HP', true);
+                window._rewardedAdBtn = { x: btnX, y: btnsY, w: btnW, h: btnH };
+
+                // 재시작 CTA (아래)
+                const rstY = btnsY + btnH + btnGapV;
+                drawCTA(btnX, rstY, btnW, btnH, 'restart', '↻', txt().restartBtn, false);
+                window._restartBtn = { x: btnX, y: rstY, w: btnW, h: btnH };
             } else {
                 window._rewardedAdBtn = null;
-                // 재시작 버튼만 (둥근 사각형)
-                const rstBtnY = H * 0.54;
-                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
-                ctx.fillStyle = '#1a2a4a';
-                ctx.fill();
-                ctx.strokeStyle = '#4488cc';
-                ctx.lineWidth = 2;
-                drawRoundRect(rstBtnX, rstBtnY, rstBtnW, rstBtnH, 8);
-                ctx.stroke();
-                ctx.fillStyle = '#88ccff';
-                ctx.font = `bold ${Math.floor(TILE * 0.35)}px sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(txt().restartBtn, W / 2, rstBtnY + rstBtnH / 2);
-                window._restartBtn = { x: rstBtnX, y: rstBtnY, w: rstBtnW, h: rstBtnH };
+                // 재시작만 (맥박)
+                drawCTA(btnX, btnsY, btnW, btnH, 'restart', '↻', txt().restartBtn, true);
+                window._restartBtn = { x: btnX, y: btnsY, w: btnW, h: btnH };
             }
+            ctx.restore();
         }
+    }
+
+    // Pause 오버레이
+    if (paused && !gameOver) {
+        ctx.fillStyle = 'rgba(5,8,20,0.5)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${Math.floor(TILE * 0.7)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 12;
+        ctx.fillText('⏸  ' + (lang === 'ko' ? '일시정지' : 'PAUSED'), W / 2, H * 0.4);
+        ctx.font = `${Math.floor(TILE * 0.28)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.fillStyle = '#aab4d0';
+        ctx.fillText(lang === 'ko' ? 'P 키로 재개' : 'Press P to resume', W / 2, H * 0.48);
+        ctx.shadowBlur = 0;
     }
 
     // Rotate overlay (portrait mobile)
@@ -2544,216 +3995,1155 @@ function draw() {
     }
 }
 
-// ---- Draw tower at position ----
-function drawTowerAt(x, y, typeIndex, level, angle) {
-    const type = TOWER_TYPES[typeIndex];
-    const s = TILE * 0.38;
-    const a = angle || 0;
+// ---- Draw tower body (레벨별 진화 시각) ----
+function drawTowerBody(x, y, s, typeIndex, angle, level) {
+    level = level || 1;
+    const isMax = level >= 5;
 
-    ctx.save();
-    ctx.translate(x, y);
+    // Lv5 최종진화 오라 (몸체보다 먼저, 뒤쪽)
+    if (isMax) {
+        const auraColors = ['#ffd84a', '#ff6a22', '#88e0ff', '#ffee55', '#66ff44'];
+        const auraColor = auraColors[typeIndex];
+        const pulse = 0.7 + Math.sin(Date.now() / 250) * 0.3;
+        ctx.globalAlpha = 0.15 * pulse;
+        ctx.fillStyle = auraColor;
+        ctx.beginPath();
+        ctx.arc(x, y, s * 1.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.25 * pulse;
+        ctx.beginPath();
+        ctx.arc(x, y, s * 1.0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
 
-    // Base
-    ctx.fillStyle = type.colorDark;
-    ctx.beginPath();
-    ctx.arc(0, 0, s, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Tower body
-    ctx.fillStyle = type.color;
+    // (공통 돌 베이스 제거 — 타워별 받침대로만 표현)
 
     if (typeIndex === 0) {
-        // Arrow tower - triangle on circle
-        ctx.beginPath();
-        ctx.arc(0, 0, s * 0.75, 0, Math.PI * 2);
+        // === 석궁 타워 (Crossbow) ===
+        // 돌 받침대
+        ctx.fillStyle = '#555560';
+        ctx.strokeStyle = '#1a1a22';
+        ctx.lineWidth = Math.max(2, s * 0.07);
+        drawRoundRect(x - s * 0.4, y + s * 0.05, s * 0.8, s * 0.45, s * 0.08);
         ctx.fill();
-        // Turret
-        ctx.save();
-        ctx.rotate(a);
-        ctx.fillStyle = '#66dd66';
-        ctx.fillRect(-2, -s * 0.9, 4, s * 0.9);
-        ctx.fillStyle = '#88ff88';
-        ctx.beginPath();
-        ctx.moveTo(0, -s);
-        ctx.lineTo(-4, -s * 0.6);
-        ctx.lineTo(4, -s * 0.6);
-        ctx.fill();
-        ctx.restore();
-    } else if (typeIndex === 1) {
-        // Cannon tower - square-ish
-        drawRoundRect(-s * 0.65, -s * 0.65, s * 1.3, s * 1.3, 3);
-        ctx.fill();
-        // Barrel
-        ctx.save();
-        ctx.rotate(a);
-        ctx.fillStyle = '#dd8844';
-        ctx.fillRect(-3, -s * 1.0, 6, s * 0.7);
-        ctx.fillStyle = '#333';
-        ctx.beginPath();
-        ctx.arc(0, -s * 1.0, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    } else if (typeIndex === 2) {
-        // Ice tower - hexagonal
-        ctx.beginPath();
-        for (let i = 0; i < 6; i++) {
-            const ang = (Math.PI * 2 / 6) * i - Math.PI / 6;
-            const px = Math.cos(ang) * s * 0.8;
-            const py = Math.sin(ang) * s * 0.8;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        // Crystal
-        ctx.fillStyle = '#88ddff';
-        ctx.beginPath();
-        ctx.moveTo(0, -s * 0.5);
-        ctx.lineTo(-s * 0.3, 0);
-        ctx.lineTo(0, s * 0.5);
-        ctx.lineTo(s * 0.3, 0);
-        ctx.closePath();
-        ctx.fill();
-        // Glow
-        ctx.globalAlpha = 0.3;
-        ctx.fillStyle = '#aaeeff';
-        ctx.beginPath();
-        ctx.arc(0, 0, s * 0.3, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-    } else if (typeIndex === 3) {
-        // Lightning tower - star shape
-        ctx.beginPath();
-        for (let i = 0; i < 8; i++) {
-            const ang = (Math.PI * 2 / 8) * i - Math.PI / 2;
-            const r = i % 2 === 0 ? s * 0.85 : s * 0.45;
-            const px = Math.cos(ang) * r;
-            const py = Math.sin(ang) * r;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        // Center orb
-        ctx.fillStyle = '#ffff88';
-        ctx.beginPath();
-        ctx.arc(0, 0, s * 0.25, 0, Math.PI * 2);
-        ctx.fill();
-        // Lightning bolt indicator
-        ctx.save();
-        ctx.rotate(a);
-        ctx.strokeStyle = '#ffff44';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(0, -s * 0.15);
-        ctx.lineTo(s * 0.15, -s * 0.55);
-        ctx.lineTo(-s * 0.05, -s * 0.4);
-        ctx.lineTo(s * 0.1, -s * 0.85);
         ctx.stroke();
-        ctx.restore();
-    } else if (typeIndex === 4) {
-        // Poison tower - bubbling cauldron
-        ctx.beginPath();
-        ctx.arc(0, 0, s * 0.75, 0, Math.PI * 2);
-        ctx.fill();
-        // Cauldron body
-        ctx.fillStyle = '#226622';
-        ctx.beginPath();
-        ctx.arc(0, s * 0.1, s * 0.55, 0, Math.PI);
-        ctx.fill();
-        // Poison liquid
-        ctx.fillStyle = '#44ff22';
-        ctx.beginPath();
-        ctx.ellipse(0, s * 0.05, s * 0.45, s * 0.2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Bubbles
-        ctx.fillStyle = '#88ff66';
-        ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 200) * 0.3;
-        ctx.beginPath();
-        ctx.arc(-s * 0.15, -s * 0.05 + Math.sin(Date.now() / 300) * 2, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(s * 0.15, -s * 0.1 + Math.sin(Date.now() / 250 + 1) * 2, 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-    }
+        // 받침대 하이라이트
+        ctx.fillStyle = '#7a7a88';
+        ctx.fillRect(x - s * 0.36, y + s * 0.09, s * 0.72, s * 0.08);
+        // Lv4+ 돌 기단 추가 레이어
+        if (level >= 4) {
+            ctx.fillStyle = '#40404a';
+            ctx.fillRect(x - s * 0.48, y + s * 0.42, s * 0.96, s * 0.1);
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - s * 0.48, y + s * 0.42, s * 0.96, s * 0.1);
+        }
 
-    // Level ring
-    if (level > 1) {
-        ctx.strokeStyle = '#ffdd44';
+        // 석궁 본체 (회전)
+        ctx.save();
+        ctx.translate(x, y - s * 0.1);
+        ctx.rotate(angle);
+
+        // Stock 색상
+        const stockBody = isMax ? '#d6a050' : level >= 3 ? '#a87238' : '#8a5830';
+        const stockEdge = isMax ? '#6a4010' : '#3a1a08';
+
+        // Lv5 스톡 보석 베이스 글로우
+        if (isMax) {
+            ctx.fillStyle = 'rgba(255,216,74,0.2)';
+            ctx.beginPath();
+            ctx.ellipse(0, 0, s * 0.55, s * 0.2, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Stock (수평 나무 몸체)
+        ctx.fillStyle = stockBody;
+        ctx.strokeStyle = stockEdge;
+        ctx.lineWidth = Math.max(2, s * 0.07);
+        drawRoundRect(-s * 0.4, -s * 0.1, s * 0.7, s * 0.2, s * 0.04);
+        ctx.fill();
+        ctx.stroke();
+        // Stock 홈 (볼트 가이드)
+        ctx.strokeStyle = stockEdge;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.35, 0);
+        ctx.lineTo(s * 0.25, 0);
+        ctx.stroke();
+
+        // Lv4+ 금속 보강 (스톡 중앙 띠)
+        if (level >= 4) {
+            ctx.fillStyle = isMax ? '#ffd84a' : '#80808a';
+            ctx.fillRect(-s * 0.18, -s * 0.12, s * 0.1, s * 0.24);
+            ctx.strokeStyle = stockEdge;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-s * 0.18, -s * 0.12, s * 0.1, s * 0.24);
+        }
+
+        // 트리거 (뒤쪽 하단)
+        ctx.fillStyle = '#2a2a30';
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.25, s * 0.1);
+        ctx.lineTo(-s * 0.18, s * 0.22);
+        ctx.lineTo(-s * 0.12, s * 0.1);
+        ctx.closePath();
+        ctx.fill();
+
+        // 프로드 (활 부분) — 앞쪽에 수직으로 큰 C자
+        const prodR = level >= 4 ? s * 0.42 : level >= 2 ? s * 0.38 : s * 0.34;
+        const prodLW = Math.max(3, s * (level >= 4 ? 0.14 : level >= 2 ? 0.12 : 0.1));
+        const prodX = s * 0.15;
+
+        // Lv5 프로드 외곽 금색 글로우
+        if (isMax) {
+            ctx.strokeStyle = '#ffd84a';
+            ctx.lineWidth = prodLW + 3;
+            ctx.lineCap = 'round';
+            ctx.globalAlpha = 0.4;
+            ctx.beginPath();
+            ctx.moveTo(prodX - s * 0.05, -prodR);
+            ctx.quadraticCurveTo(prodX + s * 0.22, 0, prodX - s * 0.05, prodR);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        // 프로드 본체
+        ctx.strokeStyle = isMax ? '#6a4010' : level >= 3 ? '#2a0a00' : '#3a1a08';
+        ctx.lineWidth = prodLW;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(prodX - s * 0.05, -prodR);
+        ctx.quadraticCurveTo(prodX + s * 0.22, 0, prodX - s * 0.05, prodR);
+        ctx.stroke();
+        // 프로드 하이라이트
+        if (isMax) {
+            ctx.strokeStyle = '#ffd84a';
+            ctx.lineWidth = prodLW * 0.4;
+            ctx.beginPath();
+            ctx.moveTo(prodX - s * 0.05, -prodR);
+            ctx.quadraticCurveTo(prodX + s * 0.22, 0, prodX - s * 0.05, prodR);
+            ctx.stroke();
+        }
+
+        // 활줄 (당겨진 상태 — V자)
+        ctx.strokeStyle = '#f0e8c0';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(prodX - s * 0.05, -prodR);
+        ctx.lineTo(-s * 0.1, 0);
+        ctx.lineTo(prodX - s * 0.05, prodR);
+        ctx.stroke();
+
+        // 볼트(화살) — Lv4+ 더블 볼트
+        const boltCount = level >= 4 ? 2 : 1;
+        for (let bi = 0; bi < boltCount; bi++) {
+            const yOff = boltCount === 2 ? (bi === 0 ? -s * 0.07 : s * 0.07) : 0;
+            // 볼트 대
+            ctx.strokeStyle = '#c89058';
+            ctx.lineWidth = Math.max(1.8, s * 0.06);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(-s * 0.25, yOff);
+            ctx.lineTo(s * 0.42, yOff);
+            ctx.stroke();
+            // 깃털 (꼬리)
+            ctx.fillStyle = isMax ? '#ffd84a' : level >= 3 ? '#aaffaa' : '#c0c0c8';
+            ctx.beginPath();
+            ctx.moveTo(-s * 0.3, yOff);
+            ctx.lineTo(-s * 0.22, yOff - s * 0.06);
+            ctx.lineTo(-s * 0.18, yOff);
+            ctx.lineTo(-s * 0.22, yOff + s * 0.06);
+            ctx.closePath();
+            ctx.fill();
+            // 촉 (뾰족한 삼각)
+            ctx.fillStyle = isMax ? '#ff4040' : level >= 3 ? '#aaff88' : '#cfff66';
+            ctx.strokeStyle = isMax ? '#8a0000' : '#2a5a10';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(s * 0.55, yOff);
+            ctx.lineTo(s * 0.4, yOff - s * 0.09);
+            ctx.lineTo(s * 0.4, yOff + s * 0.09);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        ctx.restore();
+
+        // Lv5 석궁 보석 (받침대 중앙)
+        if (isMax) {
+            ctx.fillStyle = '#ff2020';
+            ctx.beginPath();
+            ctx.arc(x, y + s * 0.27, s * 0.06, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x - s * 0.015, y + s * 0.255, s * 0.022, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+    } else if (typeIndex === 1) {
+        // === 대포 타워 (둥근 클래식) ===
+        // Lv1: 작은 둥근 대포. Lv2-3: 밴드/길이 ↑. Lv4: 2중 포신. Lv5: 황금 + 화염 포구
+        const mountColor = isMax ? '#6a4a20' : '#3a3a48';
+        const mountEdge = isMax ? '#2a1000' : '#1a1a22';
+        // 마운트 받침 (원형) — 타워 중심과 동심
+        ctx.fillStyle = mountColor;
+        ctx.strokeStyle = mountEdge;
+        ctx.lineWidth = Math.max(2, s * 0.08);
+        ctx.beginPath();
+        ctx.arc(x, y, s * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // 받침 상단 하이라이트 (살짝 위쪽으로 올림)
+        ctx.fillStyle = isMax ? '#b08040' : '#5a5a68';
+        ctx.beginPath();
+        ctx.ellipse(x, y - s * 0.08, s * 0.5, s * 0.14, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Lv4+ 받침 리벳 (장식) — 중심 기준 방사형
+        if (level >= 4) {
+            ctx.fillStyle = isMax ? '#ffd84a' : '#80808a';
+            for (let i = 0; i < 4; i++) {
+                const ang = (i / 4) * Math.PI * 2 + Math.PI / 4;
+                ctx.beginPath();
+                ctx.arc(x + Math.cos(ang) * s * 0.43, y + Math.sin(ang) * s * 0.43, s * 0.045, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 대포 본체 (회전)
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+
+        const barrelCount = level >= 4 ? 2 : 1;
+        const bLen = level >= 3 ? s * 0.8 : level >= 2 ? s * 0.7 : s * 0.6;
+        const bRad = level >= 3 ? s * 0.22 : level >= 2 ? s * 0.2 : s * 0.18;
+
+        for (let bi = 0; bi < barrelCount; bi++) {
+            const yOff = barrelCount === 2 ? (bi === 0 ? -s * 0.22 : s * 0.22) : 0;
+
+            // 둥근 대포 몸체 — 뒷부분 큰 원 + 앞쪽 포신 원통
+            const backR = bRad * 1.35;
+            // 뒷부분 (큰 원)
+            ctx.fillStyle = isMax ? '#3a2810' : '#1a1a22';
+            ctx.strokeStyle = isMax ? '#8a5400' : '#0a0a10';
+            ctx.lineWidth = Math.max(2, s * 0.07);
+            ctx.beginPath();
+            ctx.arc(0, yOff, backR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 포신 (둥근 사각 원통)
+            ctx.fillStyle = isMax ? '#3a2810' : '#2a2a32';
+            drawRoundRect(0, yOff - bRad, bLen, bRad * 2, bRad * 0.3);
+            ctx.fill();
+            ctx.stroke();
+            // 포신 상단 하이라이트
+            ctx.fillStyle = isMax ? '#8a5418' : '#4a4a55';
+            ctx.fillRect(0, yOff - bRad + 1, bLen, bRad * 0.35);
+            // 밴드 (금속 띠)
+            ctx.strokeStyle = isMax ? '#ffd84a' : '#80808a';
+            ctx.lineWidth = Math.max(1.5, s * 0.04);
+            const bandN = level >= 3 ? 3 : level >= 2 ? 2 : 1;
+            for (let bd = 0; bd < bandN; bd++) {
+                const bx = bLen * (0.25 + bd * (0.55 / Math.max(1, bandN - 1)));
+                ctx.beginPath();
+                ctx.moveTo(bx, yOff - bRad);
+                ctx.lineTo(bx, yOff + bRad);
+                ctx.stroke();
+            }
+
+            // 포구 (앞쪽)
+            if (isMax) {
+                // Lv5: 화염 분출 + 황금 테두리
+                ctx.fillStyle = '#ffaa44';
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 1.2, -Math.PI / 2, Math.PI / 2);
+                ctx.fill();
+                ctx.fillStyle = '#ff4020';
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 0.85, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#0a0000';
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 0.5, 0, Math.PI * 2);
+                ctx.fill();
+                // 황금 링
+                ctx.strokeStyle = '#ffd84a';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 0.95, 0, Math.PI * 2);
+                ctx.stroke();
+            } else {
+                // 일반 포구 (검은 구멍)
+                ctx.fillStyle = '#40404a';
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 0.9, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = mountEdge;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                ctx.fillStyle = '#0a0a0a';
+                ctx.beginPath();
+                ctx.arc(bLen, yOff, bRad * 0.55, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 포신 기저 (중앙 허브)
+        ctx.fillStyle = isMax ? '#ffd84a' : '#3a3a48';
+        ctx.strokeStyle = mountEdge;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(0, 0, s + 2, 0, Math.PI * 2 * ((level - 1) / 4));
+        ctx.arc(0, 0, s * 0.15, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
-    }
+        if (isMax) {
+            ctx.fillStyle = '#ff4020';
+            ctx.beginPath();
+            ctx.arc(0, 0, s * 0.07, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
-    ctx.restore();
+        ctx.restore();
+
+    } else if (typeIndex === 2) {
+        // === 얼음 타워 ===
+        // Lv1: 기본 크리스털. Lv2-3: 기둥 커짐. Lv4: 궤도 조각. Lv5: 왕관 결정 + 빛 오라
+        // 바닥 얼음 링
+        ctx.fillStyle = isMax ? '#a8d0f0' : '#5080a8';
+        ctx.beginPath();
+        ctx.ellipse(x, y + s * 0.4, s * 0.7, s * 0.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Lv4+ 궤도 얼음 조각 (4~6개)
+        if (level >= 4) {
+            const shardCount = level >= 5 ? 6 : 4;
+            const orbitPh = Date.now() / 1500;
+            ctx.fillStyle = isMax ? '#e0f0ff' : '#a0d0e8';
+            ctx.strokeStyle = '#2a5080';
+            ctx.lineWidth = 1;
+            for (let si = 0; si < shardCount; si++) {
+                const a = (si / shardCount) * Math.PI * 2 + orbitPh;
+                const ox = x + Math.cos(a) * s * 0.9;
+                const oy = y + Math.sin(a) * s * 0.9 * 0.5; // 납작 궤도
+                ctx.beginPath();
+                ctx.moveTo(ox, oy - s * 0.08);
+                ctx.lineTo(ox - s * 0.05, oy);
+                ctx.lineTo(ox, oy + s * 0.08);
+                ctx.lineTo(ox + s * 0.05, oy);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+        // 크리스털 기둥 (6각)
+        const crystalColor = isMax ? '#a8e0ff' : level >= 3 ? '#7ac0e8' : '#6ab0dc';
+        ctx.fillStyle = crystalColor;
+        ctx.strokeStyle = isMax ? '#3a6090' : '#1a4060';
+        ctx.lineWidth = Math.max(2, s * 0.07);
+        const pillarTop = level >= 3 ? -s * 0.55 : -s * 0.45;
+        ctx.beginPath();
+        ctx.moveTo(x - s * 0.3, y + s * 0.4);
+        ctx.lineTo(x - s * 0.4, y);
+        ctx.lineTo(x - s * 0.25, y + pillarTop);
+        ctx.lineTo(x + s * 0.25, y + pillarTop);
+        ctx.lineTo(x + s * 0.4, y);
+        ctx.lineTo(x + s * 0.3, y + s * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // 크리스털 면 하이라이트
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.beginPath();
+        ctx.moveTo(x - s * 0.25, y + pillarTop);
+        ctx.lineTo(x - s * 0.3, y + s * 0.2);
+        ctx.lineTo(x - s * 0.1, y + s * 0.3);
+        ctx.lineTo(x - s * 0.1, y + pillarTop);
+        ctx.closePath();
+        ctx.fill();
+        // 기둥 눈송이 (Lv2+)
+        if (level >= 2) {
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.2;
+            ctx.lineCap = 'round';
+            const snowY = y + (pillarTop + s * 0.4) / 2;
+            for (let si = 0; si < 3; si++) {
+                const a = (si / 3) * Math.PI;
+                ctx.beginPath();
+                ctx.moveTo(x + Math.cos(a) * s * 0.08, snowY + Math.sin(a) * s * 0.08);
+                ctx.lineTo(x - Math.cos(a) * s * 0.08, snowY - Math.sin(a) * s * 0.08);
+                ctx.stroke();
+            }
+        }
+        // 상단 결정 (레벨 따라 커짐)
+        const topR = isMax ? s * 0.35 : level >= 3 ? s * 0.28 : s * 0.22;
+        const topY = y + pillarTop - topR * 0.3;
+        ctx.save();
+        ctx.translate(x, topY);
+        ctx.rotate(angle);
+        // Lv5 = 왕관 결정 (여러 뿔)
+        if (isMax) {
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#3a6090';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(0, -topR);
+            ctx.lineTo(-topR * 0.8, -topR * 0.2);
+            ctx.lineTo(-topR * 0.5, 0);
+            ctx.lineTo(-topR * 0.3, topR * 0.5);
+            ctx.lineTo(0, topR);
+            ctx.lineTo(topR * 0.3, topR * 0.5);
+            ctx.lineTo(topR * 0.5, 0);
+            ctx.lineTo(topR * 0.8, -topR * 0.2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // 중앙 파랑 코어
+            ctx.fillStyle = '#4aa8ff';
+            ctx.beginPath();
+            ctx.arc(0, 0, topR * 0.3, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // 다이아몬드 결정
+            ctx.fillStyle = '#b0e8ff';
+            ctx.strokeStyle = '#2a5080';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(0, -topR);
+            ctx.lineTo(-topR * 0.7, 0);
+            ctx.lineTo(0, topR);
+            ctx.lineTo(topR * 0.7, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.moveTo(0, -topR * 0.7);
+            ctx.lineTo(-topR * 0.3, 0);
+            ctx.lineTo(0, topR * 0.2);
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
+
+    } else if (typeIndex === 3) {
+        // === 번개 타워 — 레벨마다 극적 변화 ===
+        const pulse = 0.7 + Math.sin(Date.now() / 150) * 0.3;
+
+        if (level === 1) {
+            // Lv1: 단순 금속 막대 + 작은 오브
+            // 얇은 기둥
+            ctx.fillStyle = '#707080';
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 2;
+            ctx.fillRect(x - s * 0.12, y - s * 0.3, s * 0.24, s * 0.7);
+            ctx.strokeRect(x - s * 0.12, y - s * 0.3, s * 0.24, s * 0.7);
+            // 상단 전극
+            ctx.fillStyle = '#a0a0b0';
+            drawRoundRect(x - s * 0.18, y - s * 0.38, s * 0.36, s * 0.12, 3);
+            ctx.fill();
+            ctx.stroke();
+            // 작은 오브
+            ctx.globalAlpha = 0.4 * pulse;
+            ctx.fillStyle = '#ffff88';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.5, s * 0.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#ffffcc';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.5, s * 0.12 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+
+        } else if (level === 2) {
+            // Lv2: 테슬라 코일 (가로 링 3개 + 중간 오브)
+            // 베이스 코일 몸체
+            ctx.fillStyle = '#909098';
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 2;
+            drawRoundRect(x - s * 0.3, y - s * 0.2, s * 0.6, s * 0.7, s * 0.1);
+            ctx.fill();
+            ctx.stroke();
+            // 코일 링 3개 (가로 타원)
+            for (let i = 0; i < 3; i++) {
+                const yy = y - s * 0.1 + i * s * 0.2;
+                ctx.fillStyle = '#606068';
+                ctx.beginPath();
+                ctx.ellipse(x, yy, s * 0.32, s * 0.06, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#80808a';
+                ctx.beginPath();
+                ctx.ellipse(x, yy - 1, s * 0.3, s * 0.04, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // 상단 오브
+            ctx.globalAlpha = 0.4 * pulse;
+            ctx.fillStyle = '#ffff88';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.5, s * 0.3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.8;
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.5, s * 0.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.5, s * 0.1 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+
+        } else if (level === 3) {
+            // Lv3: 쌍기둥 + 가운데 아크 + 큰 오브
+            // 좌우 2개 기둥
+            ctx.fillStyle = '#707080';
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 2;
+            ctx.fillRect(x - s * 0.45, y - s * 0.2, s * 0.18, s * 0.7);
+            ctx.strokeRect(x - s * 0.45, y - s * 0.2, s * 0.18, s * 0.7);
+            ctx.fillRect(x + s * 0.27, y - s * 0.2, s * 0.18, s * 0.7);
+            ctx.strokeRect(x + s * 0.27, y - s * 0.2, s * 0.18, s * 0.7);
+            // 기둥 상단 캡
+            ctx.fillStyle = '#ffcc44';
+            ctx.beginPath();
+            ctx.arc(x - s * 0.36, y - s * 0.2, s * 0.08, 0, Math.PI * 2);
+            ctx.arc(x + s * 0.36, y - s * 0.2, s * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 기둥 사이 아크 (수평 지그재그)
+            ctx.strokeStyle = 'rgba(255,255,140,0.8)';
+            ctx.lineWidth = 1.5;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x - s * 0.32, y - s * 0.2);
+            for (let i = 1; i < 4; i++) {
+                const t = i / 4;
+                ctx.lineTo(x - s * 0.32 + t * s * 0.64 + (Math.random() - 0.5) * 4, y - s * 0.2 + (Math.random() - 0.5) * 4);
+            }
+            ctx.lineTo(x + s * 0.32, y - s * 0.2);
+            ctx.stroke();
+            // 중앙 기둥 받침
+            ctx.fillStyle = '#40404a';
+            drawRoundRect(x - s * 0.2, y + s * 0.3, s * 0.4, s * 0.2, 3);
+            ctx.fill();
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            // 큰 중앙 오브 (기둥 사이 상단)
+            ctx.globalAlpha = 0.35 * pulse;
+            ctx.fillStyle = '#ffff88';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.4, s * 0.36, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.7 * pulse;
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.4, s * 0.24, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.4, s * 0.14 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+
+        } else if (level === 4) {
+            // Lv4: 삼각 크라운 + 3개 전극 + 중앙 오브
+            // 베이스 (돌 받침)
+            ctx.fillStyle = '#5a5a68';
+            ctx.strokeStyle = '#1a1a22';
+            ctx.lineWidth = 2;
+            drawRoundRect(x - s * 0.35, y + s * 0.2, s * 0.7, s * 0.28, s * 0.06);
+            ctx.fill();
+            ctx.stroke();
+            // 중앙 기둥
+            ctx.fillStyle = '#808090';
+            ctx.fillRect(x - s * 0.1, y - s * 0.1, s * 0.2, s * 0.35);
+            ctx.strokeRect(x - s * 0.1, y - s * 0.1, s * 0.2, s * 0.35);
+            // 3개 전극 크라운 (상단 방사형)
+            const electrodeAngles = [-Math.PI / 2, -Math.PI / 2 - 0.7, -Math.PI / 2 + 0.7];
+            for (const ea of electrodeAngles) {
+                const ex = x + Math.cos(ea) * s * 0.4;
+                const ey = y - s * 0.1 + Math.sin(ea) * s * 0.4;
+                ctx.strokeStyle = '#909098';
+                ctx.lineWidth = Math.max(3, s * 0.09);
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(x, y - s * 0.1);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+                // 전극 끝 (작은 오브)
+                ctx.fillStyle = '#ffcc44';
+                ctx.beginPath();
+                ctx.arc(ex, ey, s * 0.09, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(ex - 1, ey - 1, s * 0.04, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // 중앙 오브 (큰)
+            const orbY4 = y - s * 0.1;
+            ctx.globalAlpha = 0.35 * pulse;
+            ctx.fillStyle = '#ffff88';
+            ctx.beginPath();
+            ctx.arc(x, orbY4, s * 0.32, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.7 * pulse;
+            ctx.beginPath();
+            ctx.arc(x, orbY4, s * 0.22, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, orbY4, s * 0.11 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+            // 중앙→전극 아크 (간헐적)
+            if (Math.sin(Date.now() / 120) > 0.3) {
+                ctx.strokeStyle = 'rgba(255,255,160,0.7)';
+                ctx.lineWidth = 1.5;
+                for (const ea of electrodeAngles) {
+                    const ex = x + Math.cos(ea) * s * 0.4;
+                    const ey = y - s * 0.1 + Math.sin(ea) * s * 0.4;
+                    ctx.beginPath();
+                    ctx.moveTo(x, orbY4);
+                    ctx.lineTo(ex + (Math.random() - 0.5) * 3, ey + (Math.random() - 0.5) * 3);
+                    ctx.stroke();
+                }
+            }
+
+        } else {
+            // Lv5: 폭풍 오벨리스크 — 8각 기둥 + 거대 상단 오브 + 궤도 오브 + 지속 아크
+            // 거대 외곽 오라
+            ctx.globalAlpha = 0.18 * pulse;
+            ctx.fillStyle = '#ffee55';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.3, s * 1.1, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // 8각 오벨리스크 (끝이 뾰족)
+            ctx.fillStyle = '#8a6020';
+            ctx.strokeStyle = '#3a1a00';
+            ctx.lineWidth = Math.max(2.5, s * 0.08);
+            ctx.beginPath();
+            ctx.moveTo(x, y - s * 0.7);   // 꼭대기
+            ctx.lineTo(x + s * 0.28, y - s * 0.45);
+            ctx.lineTo(x + s * 0.35, y + s * 0.45);
+            ctx.lineTo(x - s * 0.35, y + s * 0.45);
+            ctx.lineTo(x - s * 0.28, y - s * 0.45);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // 오벨리스크 중앙 하이라이트 라인
+            ctx.fillStyle = '#ffd84a';
+            ctx.fillRect(x - s * 0.05, y - s * 0.5, s * 0.1, s * 0.95);
+            // 오벨리스크 룬 (가로 홈 3개)
+            ctx.strokeStyle = '#3a1a00';
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < 3; i++) {
+                const yy = y - s * 0.25 + i * s * 0.25;
+                ctx.beginPath();
+                ctx.moveTo(x - s * 0.2, yy);
+                ctx.lineTo(x + s * 0.2, yy);
+                ctx.stroke();
+            }
+            // 상단 거대 오브 (오벨리스크 꼭대기)
+            const bigR = s * 0.38;
+            ctx.globalAlpha = 0.3 * pulse;
+            ctx.fillStyle = '#ffff88';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.8, bigR * 1.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.7 * pulse;
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.8, bigR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, y - s * 0.8, bigR * 0.5 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+            // 궤도 위성 오브 4개
+            const satPh = Date.now() / 500;
+            for (let si = 0; si < 4; si++) {
+                const sa = (si / 4) * Math.PI * 2 + satPh;
+                const sox = x + Math.cos(sa) * s * 0.7;
+                const soy = y - s * 0.4 + Math.sin(sa) * s * 0.25;
+                ctx.globalAlpha = 0.7;
+                ctx.fillStyle = '#ffcc44';
+                ctx.beginPath();
+                ctx.arc(sox, soy, s * 0.12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(sox, soy, s * 0.06, 0, Math.PI * 2);
+                ctx.fill();
+                // 아크
+                ctx.strokeStyle = 'rgba(255,255,180,0.6)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(x, y - s * 0.8);
+                ctx.lineTo(
+                    x + (sox - x) * 0.5 + (Math.random() - 0.5) * 4,
+                    y - s * 0.8 + (soy - (y - s * 0.8)) * 0.5 + (Math.random() - 0.5) * 4
+                );
+                ctx.lineTo(sox, soy);
+                ctx.stroke();
+            }
+        }
+
+    } else if (typeIndex === 4) {
+        // === 독 타워 ===
+        // Lv1: 기본 가마솥. Lv2-3: 거품 증가. Lv4: 해골 장식. Lv5: 녹색 불꽃 + 뼈 장식
+        // 받침대 다리
+        ctx.fillStyle = '#2a2a30';
+        ctx.fillRect(x - s * 0.4, y + s * 0.25, s * 0.12, s * 0.3);
+        ctx.fillRect(x + s * 0.28, y + s * 0.25, s * 0.12, s * 0.3);
+        // Lv5 녹색 불꽃 (솥 아래)
+        if (isMax) {
+            const fPh = Date.now() / 150;
+            ctx.fillStyle = 'rgba(80,255,40,0.7)';
+            for (let fi = 0; fi < 3; fi++) {
+                const fx = x - s * 0.2 + fi * s * 0.2;
+                const fh = s * 0.2 + Math.sin(fPh + fi) * s * 0.06;
+                ctx.beginPath();
+                ctx.moveTo(fx - s * 0.06, y + s * 0.55);
+                ctx.quadraticCurveTo(fx, y + s * 0.55 - fh, fx + s * 0.06, y + s * 0.55);
+                ctx.closePath();
+                ctx.fill();
+            }
+            ctx.fillStyle = 'rgba(160,255,100,0.6)';
+            for (let fi = 0; fi < 3; fi++) {
+                const fx = x - s * 0.2 + fi * s * 0.2;
+                const fh = s * 0.12 + Math.sin(fPh + fi + 1) * s * 0.04;
+                ctx.beginPath();
+                ctx.moveTo(fx - s * 0.03, y + s * 0.55);
+                ctx.quadraticCurveTo(fx, y + s * 0.55 - fh, fx + s * 0.03, y + s * 0.55);
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+        // 솥 몸체
+        ctx.fillStyle = isMax ? '#30202a' : '#1a1a22';
+        ctx.strokeStyle = isMax ? '#8a3a90' : '#0a0a10';
+        ctx.lineWidth = Math.max(2, s * 0.08);
+        ctx.beginPath();
+        ctx.arc(x, y, s * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Lv4+ 해골 장식 (솥 정면)
+        if (level >= 4) {
+            const skullY = y + s * 0.1;
+            ctx.fillStyle = '#e8e0cc';
+            ctx.beginPath();
+            ctx.arc(x, skullY, s * 0.1, 0, Math.PI * 2);
+            ctx.fill();
+            // 눈구멍
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(x - s * 0.04, skullY - s * 0.01, s * 0.022, 0, Math.PI * 2);
+            ctx.arc(x + s * 0.04, skullY - s * 0.01, s * 0.022, 0, Math.PI * 2);
+            ctx.fill();
+            // 코
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x - s * 0.01, skullY + s * 0.02, s * 0.02, s * 0.025);
+        }
+        // 솥 테두리
+        ctx.fillStyle = isMax ? '#60306a' : '#40404a';
+        ctx.strokeStyle = isMax ? '#2a0030' : '#0a0a10';
+        ctx.lineWidth = Math.max(1.5, s * 0.06);
+        ctx.beginPath();
+        ctx.ellipse(x, y - s * 0.4, s * 0.6, s * 0.14, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // 독액
+        ctx.fillStyle = isMax ? '#40d020' : '#2ea028';
+        ctx.beginPath();
+        ctx.ellipse(x, y - s * 0.4, s * 0.48, s * 0.1, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // 거품 (레벨에 따라 수 증가)
+        const bPh = Date.now() / 250;
+        const bubbleCount = level >= 3 ? 5 : 3;
+        const allBubbles = [
+            { dx: -0.2, dy: -0.42, r: 0.08, phase: 0 },
+            { dx: 0.1, dy: -0.44, r: 0.06, phase: 1.5 },
+            { dx: 0.25, dy: -0.4, r: 0.05, phase: 3 },
+            { dx: -0.05, dy: -0.42, r: 0.07, phase: 2.2 },
+            { dx: 0.18, dy: -0.44, r: 0.05, phase: 0.8 },
+        ];
+        ctx.fillStyle = isMax ? '#ccffaa' : '#8aff50';
+        for (let bi = 0; bi < bubbleCount; bi++) {
+            const b = allBubbles[bi];
+            const pop = (Math.sin(bPh + b.phase) + 1) * 0.5;
+            ctx.globalAlpha = 0.5 + pop * 0.5;
+            ctx.beginPath();
+            ctx.arc(x + b.dx * s, y + b.dy * s - pop * s * 0.08, s * b.r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        // Lv5 뼈 장식 (솥 위 교차 뼈)
+        if (isMax) {
+            ctx.strokeStyle = '#e8e0cc';
+            ctx.lineWidth = Math.max(2, s * 0.06);
+            ctx.lineCap = 'round';
+            // 왼쪽 뼈
+            ctx.beginPath();
+            ctx.moveTo(x - s * 0.48, y - s * 0.32);
+            ctx.lineTo(x - s * 0.3, y - s * 0.52);
+            ctx.stroke();
+            // 오른쪽 뼈
+            ctx.beginPath();
+            ctx.moveTo(x + s * 0.48, y - s * 0.32);
+            ctx.lineTo(x + s * 0.3, y - s * 0.52);
+            ctx.stroke();
+            // 뼈 끝 (원형)
+            ctx.fillStyle = '#e8e0cc';
+            ctx.beginPath();
+            ctx.arc(x - s * 0.5, y - s * 0.3, s * 0.04, 0, Math.PI * 2);
+            ctx.arc(x - s * 0.28, y - s * 0.54, s * 0.04, 0, Math.PI * 2);
+            ctx.arc(x + s * 0.5, y - s * 0.3, s * 0.04, 0, Math.PI * 2);
+            ctx.arc(x + s * 0.28, y - s * 0.54, s * 0.04, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // 독 증기 (레벨에 따라 진해짐)
+        const vaporAlpha = isMax ? 0.45 : level >= 3 ? 0.3 : 0.25;
+        ctx.fillStyle = `rgba(120,255,80,${vaporAlpha})`;
+        ctx.beginPath();
+        ctx.arc(x - s * 0.1, y - s * 0.7 + Math.sin(bPh) * 3, s * 0.1, 0, Math.PI * 2);
+        ctx.arc(x + s * 0.1, y - s * 0.75 + Math.sin(bPh + 1) * 3, s * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+// ---- Draw tower at position ----
+function drawTowerAt(x, y, typeIndex, level, angle) {
+    const s = TILE * 0.62;
+    const a = angle || 0;
+
+    // 배치 하이라이트 (살짝 밝은 원)
+    ctx.fillStyle = 'rgba(255,255,255,0.03)';
+    ctx.beginPath();
+    ctx.arc(x, y, s * 1.0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 타워 본체 (레벨별 진화)
+    drawTowerBody(x, y, s, typeIndex, a, level);
 }
 
 // ---- Draw tower icon for UI buttons ----
 function drawTowerIcon(x, y, typeIndex, scale) {
-    const s = 12 * (scale || 1);
-    ctx.save();
-    ctx.translate(x, y);
+    const s = 18 * (scale || 1);
+    drawTowerBody(x, y, s, typeIndex, -Math.PI / 4, 1);
+}
 
-    const type = TOWER_TYPES[typeIndex];
-    ctx.fillStyle = type.colorDark;
-    ctx.beginPath();
-    ctx.arc(0, 0, s, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = type.color;
-    ctx.beginPath();
-    ctx.arc(0, 0, s * 0.75, 0, Math.PI * 2);
-    ctx.fill();
+// ---- Draw enemy shape (세균/바이러스 테마 — 무서운 실루엣) ----
+function drawEnemyShape(cx, cy, s, type, flash) {
+    if (type === 'normal') {
+        // 가시 바이러스 — 검붉은 구체 + 가시 8개 + 핵 눈
+        const body = flash ? '#ffffff' : '#b52818';
+        const dark = flash ? '#ddd' : '#3a0808';
+        const core = flash ? '#ffffff' : '#ffa030';
+        // 가시 8개 (회전)
+        ctx.fillStyle = dark;
+        const rotN = Date.now() / 3000;
+        for (let i = 0; i < 8; i++) {
+            const a = i * Math.PI / 4 + rotN;
+            const ang = Math.PI / 11;
+            const bR = s * 0.85, tR = s * 1.22;
+            ctx.beginPath();
+            ctx.moveTo(cx + Math.cos(a - ang) * bR, cy + Math.sin(a - ang) * bR);
+            ctx.lineTo(cx + Math.cos(a) * tR, cy + Math.sin(a) * tR);
+            ctx.lineTo(cx + Math.cos(a + ang) * bR, cy + Math.sin(a + ang) * bR);
+            ctx.closePath();
+            ctx.fill();
+        }
+        // 몸통
+        ctx.fillStyle = body;
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(2, s * 0.08);
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.85, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (flash) return;
+        // 혈관 (호 2개)
+        ctx.strokeStyle = '#6a0a08';
+        ctx.lineWidth = Math.max(1, s * 0.05);
+        ctx.beginPath();
+        ctx.arc(cx - s * 0.15, cy - s * 0.1, s * 0.45, Math.PI * 0.1, Math.PI * 0.7);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx + s * 0.15, cy + s * 0.15, s * 0.4, Math.PI * 1.1, Math.PI * 1.75);
+        ctx.stroke();
+        // 핵 (중심 눈)
+        ctx.fillStyle = '#1a0000';
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.38, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = core;
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx - s * 0.07, cy - s * 0.07, s * 0.09, 0, Math.PI * 2);
+        ctx.fill();
 
-    if (typeIndex === 0) {
-        ctx.fillStyle = '#88ff88';
+    } else if (type === 'swarm') {
+        // 마이크로 세균 — 작고 단순, 6가시 + 빨간 눈
+        const body = flash ? '#ffffff' : '#3a2260';
+        const dark = flash ? '#ccc' : '#0a0416';
+        // 가시 6개
+        ctx.fillStyle = dark;
+        for (let i = 0; i < 6; i++) {
+            const a = i * Math.PI / 3 + Date.now() / 2000;
+            const ang = Math.PI / 9;
+            const bR = s * 0.7, tR = s * 1.05;
+            ctx.beginPath();
+            ctx.moveTo(cx + Math.cos(a - ang) * bR, cy + Math.sin(a - ang) * bR);
+            ctx.lineTo(cx + Math.cos(a) * tR, cy + Math.sin(a) * tR);
+            ctx.lineTo(cx + Math.cos(a + ang) * bR, cy + Math.sin(a + ang) * bR);
+            ctx.closePath();
+            ctx.fill();
+        }
+        // 몸통
+        ctx.fillStyle = body;
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(1.5, s * 0.1);
         ctx.beginPath();
-        ctx.moveTo(0, -s * 0.8);
-        ctx.lineTo(-4, -s * 0.3);
-        ctx.lineTo(4, -s * 0.3);
+        ctx.arc(cx, cy, s * 0.7, 0, Math.PI * 2);
         ctx.fill();
-    } else if (typeIndex === 1) {
-        ctx.fillStyle = '#333';
+        ctx.stroke();
+        if (flash) return;
+        // 단일 빨간 눈
+        ctx.fillStyle = '#ff3030';
         ctx.beginPath();
-        ctx.arc(0, -s * 0.5, 3, 0, Math.PI * 2);
+        ctx.arc(cx, cy, s * 0.3, 0, Math.PI * 2);
         ctx.fill();
-    } else if (typeIndex === 2) {
-        ctx.fillStyle = '#88ddff';
+        ctx.fillStyle = '#ffee80';
         ctx.beginPath();
-        ctx.moveTo(0, -s * 0.4);
-        ctx.lineTo(-s * 0.3, 0);
-        ctx.lineTo(0, s * 0.4);
-        ctx.lineTo(s * 0.3, 0);
+        ctx.arc(cx - s * 0.06, cy - s * 0.06, s * 0.1, 0, Math.PI * 2);
+        ctx.fill();
+
+    } else if (type === 'fast') {
+        // 아메바 박테리아 — 길쭉한 몸 + 꼬리 채찍 + 촉수 + 외눈
+        const body = flash ? '#ffffff' : '#58a028';
+        const dark = flash ? '#ddd' : '#1a4810';
+        const slime = flash ? '#ccc' : '#9ad038';
+        const tPh = Date.now() / 200;
+        // 꼬리 채찍 (꿈틀대는 선)
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(2, s * 0.1);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx - s * 0.7, cy);
+        for (let i = 1; i <= 5; i++) {
+            const tx = cx - s * (0.7 + i * 0.32);
+            const ty = cy + Math.sin(tPh + i * 0.8) * s * 0.2;
+            ctx.lineTo(tx, ty);
+        }
+        ctx.stroke();
+        // 몸통 (가로 타원, 조금 일그러진 느낌)
+        ctx.fillStyle = body;
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(2, s * 0.08);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, s * 1.0, s * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // 촉수 3개 (앞쪽, 흔들림)
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(1.5, s * 0.07);
+        for (let i = 0; i < 3; i++) {
+            const off = (i - 1) * 0.4;
+            const bend = Math.sin(tPh + i * 1.8) * 0.35;
+            ctx.beginPath();
+            ctx.moveTo(cx + s * 0.85, cy + off * s * 0.45);
+            ctx.quadraticCurveTo(
+                cx + s * 1.25, cy + off * s * 0.7 + bend * s * 0.25,
+                cx + s * 1.55, cy + off * s * 0.95 + bend * s * 0.4
+            );
+            ctx.stroke();
+        }
+        if (flash) return;
+        // 슬라임 점
+        ctx.fillStyle = slime;
+        ctx.beginPath();
+        ctx.arc(cx - s * 0.3, cy - s * 0.15, s * 0.13, 0, Math.PI * 2);
+        ctx.arc(cx + s * 0.1, cy + s * 0.22, s * 0.1, 0, Math.PI * 2);
+        ctx.fill();
+        // 단일 외눈 (앞쪽, 빨강)
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx + s * 0.4, cy - s * 0.1, s * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ee1818';
+        ctx.beginPath();
+        ctx.arc(cx + s * 0.46, cy - s * 0.08, s * 0.14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(cx + s * 0.48, cy - s * 0.07, s * 0.07, 0, Math.PI * 2);
+        ctx.fill();
+
+    } else if (type === 'tank') {
+        // 메가 포자 — 두꺼운 껍질 + 굵은 가시 + 내부 포자들 + 후드 눈
+        const body = flash ? '#ffffff' : '#5a2a86';
+        const dark = flash ? '#ddd' : '#1a0638';
+        const darker = flash ? '#aaa' : '#0a0020';
+        // 굵은 가시 6개 (큰 삼각)
+        ctx.fillStyle = darker;
+        for (let i = 0; i < 6; i++) {
+            const a = i * Math.PI / 3 + Date.now() / 4000;
+            const ang = Math.PI / 7;
+            const bR = s * 0.95, tR = s * 1.38;
+            ctx.beginPath();
+            ctx.moveTo(cx + Math.cos(a - ang) * bR, cy + Math.sin(a - ang) * bR);
+            ctx.lineTo(cx + Math.cos(a) * tR, cy + Math.sin(a) * tR);
+            ctx.lineTo(cx + Math.cos(a + ang) * bR, cy + Math.sin(a + ang) * bR);
+            ctx.closePath();
+            ctx.fill();
+        }
+        // 몸통 (두꺼운 외곽선)
+        ctx.fillStyle = body;
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(3, s * 0.1);
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.95, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (!flash) {
+            // 내부 포자 노듈
+            ctx.fillStyle = dark;
+            const pts = [[-0.35, -0.25], [0.3, -0.3], [-0.15, 0.35], [0.35, 0.15], [-0.4, 0.1]];
+            for (const [px, py] of pts) {
+                ctx.beginPath();
+                ctx.arc(cx + px * s, cy + py * s, s * 0.14, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        if (flash) return;
+        // 후드 눈 (어두운 그림자 아래 빨간 슬릿)
+        ctx.fillStyle = darker;
+        ctx.beginPath();
+        ctx.moveTo(cx - s * 0.5, cy - s * 0.38);
+        ctx.lineTo(cx - s * 0.08, cy - s * 0.48);
+        ctx.lineTo(cx - s * 0.08, cy - s * 0.15);
+        ctx.lineTo(cx - s * 0.5, cy - s * 0.1);
         ctx.closePath();
         ctx.fill();
-    } else if (typeIndex === 3) {
-        ctx.strokeStyle = '#ffff44';
-        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(2, -s * 0.1);
-        ctx.lineTo(s * 0.2, -s * 0.6);
-        ctx.lineTo(-s * 0.05, -s * 0.35);
-        ctx.lineTo(s * 0.1, -s * 0.8);
-        ctx.stroke();
-    } else if (typeIndex === 4) {
-        // Poison icon - droplet
-        ctx.fillStyle = '#44ff22';
-        ctx.beginPath();
-        ctx.moveTo(0, -s * 0.6);
-        ctx.quadraticCurveTo(s * 0.4, -s * 0.1, 0, s * 0.3);
-        ctx.quadraticCurveTo(-s * 0.4, -s * 0.1, 0, -s * 0.6);
+        ctx.moveTo(cx + s * 0.5, cy - s * 0.38);
+        ctx.lineTo(cx + s * 0.08, cy - s * 0.48);
+        ctx.lineTo(cx + s * 0.08, cy - s * 0.15);
+        ctx.lineTo(cx + s * 0.5, cy - s * 0.1);
+        ctx.closePath();
         ctx.fill();
-    }
+        // 빨간 빛나는 슬릿
+        ctx.fillStyle = '#ff3030';
+        ctx.fillRect(cx - s * 0.42, cy - s * 0.27, s * 0.28, s * 0.08);
+        ctx.fillRect(cx + s * 0.14, cy - s * 0.27, s * 0.28, s * 0.08);
+        // 하이라이트 점
+        ctx.fillStyle = '#ffff80';
+        ctx.fillRect(cx - s * 0.3, cy - s * 0.26, s * 0.05, s * 0.05);
+        ctx.fillRect(cx + s * 0.28, cy - s * 0.26, s * 0.05, s * 0.05);
 
-    ctx.restore();
+    } else if (type === 'boss') {
+        // 초병원체 — 박동하는 덩어리 + 촉수 다발 + 다중 눈 + 이빨 입
+        const body = flash ? '#ffffff' : '#9a1818';
+        const dark = flash ? '#ddd' : '#2a0404';
+        const gore = flash ? '#ccc' : '#5a0a0a';
+        const tPh = Date.now() / 400;
+        // 촉수 8개 (흐느적)
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(3, s * 0.1);
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2 + tPh * 0.1;
+            const bend = Math.sin(tPh + i) * 0.35;
+            const bx1 = cx + Math.cos(a) * s * 0.8;
+            const by1 = cy + Math.sin(a) * s * 0.8;
+            const cx2 = cx + Math.cos(a + bend) * s * 1.25;
+            const cy2 = cy + Math.sin(a + bend) * s * 1.25;
+            const tx = cx + Math.cos(a + bend * 2) * s * 1.55;
+            const ty = cy + Math.sin(a + bend * 2) * s * 1.55;
+            ctx.beginPath();
+            ctx.moveTo(bx1, by1);
+            ctx.quadraticCurveTo(cx2, cy2, tx, ty);
+            ctx.stroke();
+        }
+        // 몸통 (박동)
+        const pulse = 1 + Math.sin(Date.now() / 300) * 0.04;
+        ctx.fillStyle = body;
+        ctx.strokeStyle = dark;
+        ctx.lineWidth = Math.max(4, s * 0.12);
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.95 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (!flash) {
+            // 내막 어두운 링
+            ctx.fillStyle = gore;
+            ctx.beginPath();
+            ctx.arc(cx, cy, s * 0.7 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        if (flash) return;
+        // 다중 눈 (4개, 노랑 흰자 + 빨강 동공)
+        const eyes = [[-0.35, -0.15], [0.35, -0.15], [-0.25, 0.2], [0.25, 0.2]];
+        ctx.fillStyle = '#ffe040';
+        for (const [ex, ey] of eyes) {
+            ctx.beginPath();
+            ctx.arc(cx + ex * s, cy + ey * s, s * 0.14, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.fillStyle = '#ff1010';
+        for (const [ex, ey] of eyes) {
+            ctx.beginPath();
+            ctx.arc(cx + ex * s, cy + ey * s, s * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // 세로 균열 (이빨 입)
+        ctx.fillStyle = '#0a0000';
+        ctx.beginPath();
+        ctx.moveTo(cx - s * 0.08, cy - s * 0.6);
+        ctx.lineTo(cx + s * 0.08, cy - s * 0.6);
+        ctx.lineTo(cx + s * 0.15, cy + s * 0.55);
+        ctx.lineTo(cx - s * 0.15, cy + s * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        // 이빨 (좌우 교차)
+        ctx.fillStyle = '#ffffff';
+        for (let f = 0; f < 5; f++) {
+            const fy = cy - s * 0.5 + f * s * 0.25;
+            // 왼쪽 이빨
+            ctx.beginPath();
+            ctx.moveTo(cx - s * 0.12, fy);
+            ctx.lineTo(cx - s * 0.02, fy + s * 0.1);
+            ctx.lineTo(cx - s * 0.12, fy + s * 0.15);
+            ctx.closePath();
+            ctx.fill();
+            // 오른쪽 이빨
+            ctx.beginPath();
+            ctx.moveTo(cx + s * 0.12, fy + s * 0.1);
+            ctx.lineTo(cx + s * 0.02, fy + s * 0.2);
+            ctx.lineTo(cx + s * 0.12, fy + s * 0.25);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
 }
 
 // ---- Draw enemy ----
 function drawEnemy(enemy) {
     const x = enemy.x;
     const y = enemy.y;
-    const s = enemy.size;
+    // 시각 크기 (스프라이트 표시 크기와 맞춤)
+    // 웨이브별 크기 스케일 (강해질수록 시각적으로 커짐, 최대 +35%)
+    const waveScale = 1 + Math.min(0.35, (wave - 1) * 0.015);
+    const baseVs = enemy.type === 'boss' ? TILE * 1.0 :
+                   enemy.type === 'tank' ? TILE * 0.65 :
+                   enemy.type === 'swarm' ? TILE * 0.3 : TILE * 0.5;
+    const vs = baseVs * waveScale;
 
     ctx.save();
 
@@ -2762,7 +5152,7 @@ function drawEnemy(enemy) {
         ctx.globalAlpha = 0.3;
         ctx.fillStyle = '#88ddff';
         ctx.beginPath();
-        ctx.arc(x, y, s + 3, 0, Math.PI * 2);
+        ctx.arc(x, y, vs + 4, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
     }
@@ -2772,314 +5162,101 @@ function drawEnemy(enemy) {
         ctx.globalAlpha = 0.25 + Math.sin(Date.now() / 150) * 0.1;
         ctx.fillStyle = '#44ff22';
         ctx.beginPath();
-        ctx.arc(x, y, s + 4, 0, Math.PI * 2);
+        ctx.arc(x, y, vs + 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
         // Poison bubbles around enemy
         ctx.fillStyle = '#66ff44';
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = 0.6;
         const bubbleAngle = Date.now() / 400;
         ctx.beginPath();
-        ctx.arc(x + Math.cos(bubbleAngle) * (s + 2), y + Math.sin(bubbleAngle) * (s + 2), 1.5, 0, Math.PI * 2);
+        ctx.arc(x + Math.cos(bubbleAngle) * (vs + 2), y + Math.sin(bubbleAngle) * (vs + 2), 2.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(x + Math.cos(bubbleAngle + 2) * (s + 3), y + Math.sin(bubbleAngle + 2) * (s + 3), 1, 0, Math.PI * 2);
+        ctx.arc(x + Math.cos(bubbleAngle + 2) * (vs + 3), y + Math.sin(bubbleAngle + 2) * (vs + 3), 2, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
     }
 
-    // Shield visual (boss)
+    // Shield visual (boss) — 육각 헥스
     if (enemy.shield > 0) {
-        ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 300) * 0.1;
+        ctx.globalAlpha = 0.35 + Math.sin(Date.now() / 300) * 0.12;
         ctx.strokeStyle = '#4488ff';
         ctx.lineWidth = 2;
+        ctx.shadowColor = '#4488ff';
+        ctx.shadowBlur = 8;
         ctx.beginPath();
         for (let hi = 0; hi < 6; hi++) {
             const hang = (Math.PI * 2 / 6) * hi + Date.now() / 2000;
-            const hpx = x + Math.cos(hang) * (s + 6);
-            const hpy = y + Math.sin(hang) * (s + 6);
+            const hpx = x + Math.cos(hang) * (vs + 8);
+            const hpy = y + Math.sin(hang) * (vs + 8);
             if (hi === 0) ctx.moveTo(hpx, hpy);
             else ctx.lineTo(hpx, hpy);
         }
         ctx.closePath();
         ctx.stroke();
+        ctx.shadowBlur = 0;
         ctx.fillStyle = 'rgba(68,136,255,0.15)';
         ctx.fill();
         ctx.globalAlpha = 1;
     }
 
-    // Speed burst visual (boss)
+    // Speed burst visual (boss) — 뒤쪽으로 뻗는 속도선
     if (enemy.speedBurstActive) {
         ctx.strokeStyle = '#ff4444';
-        ctx.lineWidth = 1.5;
-        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
         for (let sli = 0; sli < 4; sli++) {
-            const sly = y - s * 0.4 + sli * s * 0.25;
+            const sly = y - vs * 0.4 + sli * vs * 0.25;
             ctx.beginPath();
-            ctx.moveTo(x - s * 1.8 - sli * 4, sly);
-            ctx.lineTo(x - s * 0.8, sly);
+            ctx.moveTo(x - vs * 1.8 - sli * 5, sly);
+            ctx.lineTo(x - vs * 0.8, sly);
             ctx.stroke();
         }
         ctx.globalAlpha = 1;
     }
 
-    // Body color based on type
-    let bodyColor, borderColor;
-    switch (enemy.type) {
-        case 'fast':
-            bodyColor = '#44cc44';
-            borderColor = '#228822';
-            break;
-        case 'tank':
-            bodyColor = '#8844cc';
-            borderColor = '#552288';
-            break;
-        case 'boss':
-            bodyColor = '#cc2222';
-            borderColor = '#881111';
-            break;
-        default:
-            bodyColor = '#dd6644';
-            borderColor = '#993322';
-    }
+    // (그림자 완전 제거 — 성능 + 깔끔함)
 
-    // Hit flash
-    if (enemy.hitFlash > 0) {
-        bodyColor = '#ffffff';
-    }
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(x + 1, y + 2, s, s * 0.6, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Body
-    ctx.fillStyle = bodyColor;
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 2;
-
-    if (enemy.type === 'tank') {
-        // Armored brute - square with spikes
-        drawRoundRect(x - s, y - s, s * 2, s * 2, 3);
-        ctx.fill();
-        ctx.stroke();
-        // Armor plates
-        ctx.fillStyle = borderColor;
-        drawRoundRect(x - s * 0.6, y - s * 0.7, s * 1.2, s * 0.4, 2);
-        ctx.fill();
-        // Corner spikes
-        ctx.fillStyle = '#9966dd';
-        const spkS = s * 0.35;
-        [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([dx,dy]) => {
-            ctx.beginPath();
-            ctx.moveTo(x + dx * s, y + dy * s);
-            ctx.lineTo(x + dx * (s + spkS), y + dy * (s - spkS * 0.5));
-            ctx.lineTo(x + dx * (s - spkS * 0.5), y + dy * (s + spkS));
-            ctx.fill();
-        });
-    } else if (enemy.type === 'boss') {
-        // Demon boss - pentagon with horns and aura
-        // Pulsing aura
+    // Boss 오라 (광원) — shadowBlur 대신 2중 원
+    if (enemy.type === 'boss') {
         const auraPhase = Math.sin(Date.now() / 200) * 0.15;
-        ctx.globalAlpha = 0.15 + auraPhase;
-        ctx.fillStyle = '#ff4444';
+        ctx.globalAlpha = 0.2 + auraPhase;
+        ctx.fillStyle = '#ff3030';
         ctx.beginPath();
-        ctx.arc(x, y, s * 1.6, 0, Math.PI * 2);
+        ctx.arc(x, y, vs * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.3 + auraPhase;
+        ctx.beginPath();
+        ctx.arc(x, y, vs * 1.05, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
-        // Body
-        ctx.fillStyle = bodyColor;
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-            const ang = (Math.PI * 2 / 5) * i - Math.PI / 2;
-            const px = x + Math.cos(ang) * s;
-            const py = y + Math.sin(ang) * s;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // Horns
-        ctx.fillStyle = '#441111';
-        ctx.beginPath();
-        ctx.moveTo(x - s * 0.5, y - s * 0.6);
-        ctx.lineTo(x - s * 0.9, y - s * 1.4);
-        ctx.lineTo(x - s * 0.15, y - s * 0.7);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(x + s * 0.5, y - s * 0.6);
-        ctx.lineTo(x + s * 0.9, y - s * 1.4);
-        ctx.lineTo(x + s * 0.15, y - s * 0.7);
-        ctx.fill();
-        // Crown/crest
-        ctx.fillStyle = '#ff8800';
-        ctx.beginPath();
-        ctx.moveTo(x, y - s * 0.8);
-        ctx.lineTo(x - s * 0.15, y - s * 1.1);
-        ctx.lineTo(x + s * 0.15, y - s * 1.1);
-        ctx.fill();
-    } else if (enemy.type === 'fast') {
-        // Swift blade - diamond with tail
-        ctx.beginPath();
-        ctx.moveTo(x, y - s * 1.1);
-        ctx.lineTo(x + s * 0.8, y);
-        ctx.lineTo(x, y + s * 0.6);
-        ctx.lineTo(x - s * 0.8, y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // Speed lines
-        ctx.strokeStyle = '#88ff88';
-        ctx.lineWidth = 1;
-        ctx.globalAlpha = 0.4;
-        for (let i = 0; i < 3; i++) {
-            const ly = y - s * 0.3 + i * s * 0.3;
-            ctx.beginPath();
-            ctx.moveTo(x - s * 1.2 - i * 3, ly);
-            ctx.lineTo(x - s * 0.6, ly);
-            ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-        // Blade tip
-        ctx.fillStyle = '#aaffaa';
-        ctx.beginPath();
-        ctx.moveTo(x, y - s * 1.1);
-        ctx.lineTo(x - s * 0.15, y - s * 0.7);
-        ctx.lineTo(x + s * 0.15, y - s * 0.7);
-        ctx.fill();
-    } else {
-        // Normal - menacing circle with spikes
-        ctx.beginPath();
-        ctx.arc(x, y, s, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        // Small spikes around body
-        ctx.fillStyle = borderColor;
-        for (let i = 0; i < 6; i++) {
-            const ang = (Math.PI * 2 / 6) * i + Date.now() / 2000;
-            ctx.beginPath();
-            ctx.moveTo(x + Math.cos(ang) * s * 0.85, y + Math.sin(ang) * s * 0.85);
-            ctx.lineTo(x + Math.cos(ang) * s * 1.3, y + Math.sin(ang) * s * 1.3);
-            ctx.lineTo(x + Math.cos(ang + 0.2) * s * 0.85, y + Math.sin(ang + 0.2) * s * 0.85);
-            ctx.fill();
-        }
     }
 
-    // Eyes and face (type-specific, only when not flashing)
-    if (enemy.hitFlash <= 0) {
-        if (enemy.type === 'boss') {
-            // Glowing red eyes
-            ctx.fillStyle = '#ff0000';
-            ctx.shadowColor = '#ff0000';
-            ctx.shadowBlur = 6;
-            ctx.beginPath();
-            ctx.arc(x - s * 0.3, y - s * 0.1, s * 0.18, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + s * 0.3, y - s * 0.1, s * 0.18, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            // Slit pupils
-            ctx.fillStyle = '#440000';
-            ctx.fillRect(x - s * 0.32, y - s * 0.2, s * 0.04, s * 0.2);
-            ctx.fillRect(x + s * 0.28, y - s * 0.2, s * 0.04, s * 0.2);
-            // Fanged mouth
-            ctx.strokeStyle = '#ff6644';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(x - s * 0.3, y + s * 0.2);
-            ctx.lineTo(x - s * 0.15, y + s * 0.35);
-            ctx.lineTo(x, y + s * 0.2);
-            ctx.lineTo(x + s * 0.15, y + s * 0.35);
-            ctx.lineTo(x + s * 0.3, y + s * 0.2);
-            ctx.stroke();
-        } else if (enemy.type === 'tank') {
-            // Angry slit eyes
-            ctx.fillStyle = '#ddaaff';
-            ctx.beginPath();
-            ctx.ellipse(x - s * 0.3, y - s * 0.1, s * 0.22, s * 0.1, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(x + s * 0.3, y - s * 0.1, s * 0.22, s * 0.1, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#220044';
-            ctx.beginPath();
-            ctx.arc(x - s * 0.28, y - s * 0.1, s * 0.08, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + s * 0.32, y - s * 0.1, s * 0.08, 0, Math.PI * 2);
-            ctx.fill();
-            // Angry brow line
-            ctx.strokeStyle = '#552288';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(x - s * 0.5, y - s * 0.35);
-            ctx.lineTo(x - s * 0.15, y - s * 0.2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(x + s * 0.5, y - s * 0.35);
-            ctx.lineTo(x + s * 0.15, y - s * 0.2);
-            ctx.stroke();
-        } else if (enemy.type === 'fast') {
-            // Sharp narrow eyes
-            ctx.fillStyle = '#ffffff';
-            ctx.beginPath();
-            ctx.ellipse(x - s * 0.2, y - s * 0.15, s * 0.18, s * 0.08, -0.2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.ellipse(x + s * 0.2, y - s * 0.15, s * 0.18, s * 0.08, 0.2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#002200';
-            ctx.beginPath();
-            ctx.arc(x - s * 0.18, y - s * 0.15, s * 0.06, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + s * 0.22, y - s * 0.15, s * 0.06, 0, Math.PI * 2);
-            ctx.fill();
-        } else {
-            // Normal - menacing eyes + jagged mouth
-            ctx.fillStyle = '#ffcc00';
-            ctx.beginPath();
-            ctx.arc(x - s * 0.25, y - s * 0.15, s * 0.2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + s * 0.25, y - s * 0.15, s * 0.2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#331100';
-            ctx.beginPath();
-            ctx.arc(x - s * 0.22, y - s * 0.15, s * 0.1, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + s * 0.28, y - s * 0.15, s * 0.1, 0, Math.PI * 2);
-            ctx.fill();
-            // Jagged mouth
-            ctx.strokeStyle = '#331100';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(x - s * 0.25, y + s * 0.15);
-            ctx.lineTo(x - s * 0.1, y + s * 0.25);
-            ctx.lineTo(x, y + s * 0.12);
-            ctx.lineTo(x + s * 0.1, y + s * 0.25);
-            ctx.lineTo(x + s * 0.25, y + s * 0.15);
-            ctx.stroke();
-        }
-    }
+    // 벡터 실루엣 드로잉 (타입별 확실한 형체)
+    drawEnemyShape(x, y, vs, enemy.type, enemy.hitFlash > 0);
 
     ctx.restore();
 
-    // Health bar
+    // Health bar (둥근 모던 스타일)
     const hpRatio = enemy.hp / enemy.maxHp;
-    const barW = s * 2;
-    const barH = 3;
+    const barW = vs * 1.2;
+    const barH = Math.max(3, Math.floor(TILE / 14));
     const barX = x - barW / 2;
-    const barY = y - s - 6;
+    const barY = y - vs * 0.85 - barH - 3;
 
-    ctx.fillStyle = '#333';
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.fillStyle = hpRatio > 0.5 ? '#44cc44' : hpRatio > 0.25 ? '#cccc44' : '#cc4444';
-    ctx.fillRect(barX, barY, barW * hpRatio, barH);
+    // 배경
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    drawRoundRect(barX - 1, barY - 1, barW + 2, barH + 2, barH * 0.5 + 1);
+    ctx.fill();
+    // HP 바
+    ctx.fillStyle = hpRatio > 0.5 ? '#5ade5a' : hpRatio > 0.25 ? '#e6d040' : '#e64a4a';
+    drawRoundRect(barX, barY, Math.max(0, barW * hpRatio), barH, barH * 0.5);
+    ctx.fill();
+    // 하이라이트
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    drawRoundRect(barX, barY, Math.max(0, barW * hpRatio), barH * 0.5, barH * 0.3);
+    ctx.fill();
 
     // Armor indicator for tanks/bosses
     if (enemy.armor > 0) {
@@ -3104,8 +5281,9 @@ function drawEnemy(enemy) {
 // ---- Input handling ----
 function getCanvasPos(e) {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    // 게임 로직은 CSS px 좌표(W,H) 기준으로 동작 → rect 기준으로 변환
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
     let clientX, clientY;
     if (e.touches) {
         clientX = e.touches[0].clientX;
@@ -3229,8 +5407,10 @@ function handleClick(pos) {
         for (let i = 0; i < TOWER_TYPES.length; i++) {
             const bx = btnStartX + i * (btnW + 6);
             if (pos.x >= bx && pos.x <= bx + btnW) {
-                selectedTower = i;
+                // 같은 버튼 다시 누르면 선택 해제 (토글)
+                selectedTower = (selectedTower === i) ? -1 : i;
                 showUpgradeFor = null;
+                updateCursor();
                 soundManager.uiClick();
                 return;
             }
@@ -3255,6 +5435,12 @@ function handleClick(pos) {
                 showUpgradeFor = existingTower;
                 showUpgradeTimer = 6;
             }
+            return;
+        }
+
+        // 선택 안 된 상태로 잔디 클릭 → 아무 것도 하지 않음 (잘못 지어지는 실수 방지)
+        if (selectedTower < 0) {
+            showUpgradeFor = null;
             return;
         }
 
@@ -3286,8 +5472,16 @@ function handleMove(pos) {
 
 canvas.addEventListener('mousedown', (e) => {
     e.preventDefault();
+    if (e.button === 2) {
+        // 우클릭 → 선택 해제
+        selectedTower = -1;
+        showUpgradeFor = null;
+        updateCursor();
+        return;
+    }
     handleClick(getCanvasPos(e));
 });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 canvas.addEventListener('mousemove', (e) => {
     const pos = getCanvasPos(e);
@@ -3309,11 +5503,17 @@ canvas.addEventListener('touchmove', (e) => {
 
 // Keyboard
 document.addEventListener('keydown', (e) => {
-    if (e.key === '1') selectedTower = 0;
-    if (e.key === '2') selectedTower = 1;
-    if (e.key === '3') selectedTower = 2;
-    if (e.key === '4') selectedTower = 3;
-    if (e.key === '5') selectedTower = 4;
+    const keyToTower = { '1': 0, '2': 1, '3': 2, '4': 3, '5': 4 };
+    if (keyToTower.hasOwnProperty(e.key)) {
+        const i = keyToTower[e.key];
+        selectedTower = (selectedTower === i) ? -1 : i;
+        updateCursor();
+    }
+    if (e.key === '0' || e.key === '`') {
+        // 명시적 선택 해제
+        selectedTower = -1;
+        updateCursor();
+    }
     if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
         if (adInProgress) return;
@@ -3331,6 +5531,11 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Escape') {
         showUpgradeFor = null;
+        selectedTower = -1;
+        updateCursor();
+    }
+    if (e.key === 'p' || e.key === 'P') {
+        if (!gameOver && !betweenWaves) paused = !paused;
     }
     if (e.key === 'q' || e.key === 'Q') {
         const idx = SPEED_OPTIONS.indexOf(gameSpeed);
@@ -3367,7 +5572,8 @@ function restartGame() {
     floatingTexts = [];
     enemySpawnQueue = [];
     showUpgradeFor = null;
-    selectedTower = 0;
+    selectedTower = -1;
+    updateCursor();
     // v2.0
     screenShakeIntensity = 0;
     screenShakeTimer = 0;
@@ -3384,12 +5590,13 @@ function restartGame() {
     // Poki
     showRewardedAdOption = false;
     rewardedAdUsed = false;
-    generateGrassBlades();
-    generatePathDetails();
+    // 맵 랜덤 선택 (잔디/경로 재생성 포함)
+    changeMap();
 }
 
 // ---- Game Loop ----
 let lastTime = performance.now();
+let paused = false;
 function gameLoop(time) {
     const rawDt = Math.min((time - lastTime) / 1000, 0.05);
     lastTime = time;
@@ -3400,7 +5607,7 @@ function gameLoop(time) {
         return;
     }
 
-    const dt = rawDt * gameSpeed;
+    const dt = (paused && !gameOver) ? 0 : rawDt * gameSpeed;
 
     // Recalculate path on resize
     enemyPath = buildPathPixels();
