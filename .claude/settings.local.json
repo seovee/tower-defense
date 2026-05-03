@@ -14,7 +14,9 @@
       "Bash(grep -n \"^function draw\\\\|^}\\\\s*$\" /Users/kimjinseob/games/tower-defense/game.js)",
       "Bash(grep -iE \"gold|score|wave|damage|hp|cost|sell|highscore|reward|life|liv|fillText\\\\\\(.*\\\\\\\\\\\\$\\\\\\\\{|fillText\\\\\\(.*\\\\+|fillText\\\\\\(\\\\`\")",
       "Bash(grep -nE \"fillText\\\\\\(.*\\\\\\\\\\\\$\\\\{|fillText\\\\\\(.*\\\\+|fillText\\\\\\(\\\\`\" /Users/kimjinseob/games/tower-defense/game.js)",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Skill(update-config)",
+      "Bash(awk -F: '$1 > 5750 && $1 < 5810')"
     ]
   }
 }
