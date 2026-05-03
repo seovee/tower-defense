@@ -153,13 +153,39 @@ let enemySpawnQueue = [];
 let waveTotalEnemies = 0;
 let spawnTimer = 0;
 let selectedTower = -1; // -1 = 선택 없음 (건설 모드 꺼짐)
+let buildIdleTimer = 0; // 타워 건설 후 N초 미사용 시 자동 선택 해제 (남은 초)
+let showHelp = false;   // H 키로 토글되는 단축키 도움말 오버레이
 
-// 타워 선택 상태에 따라 커서 변경 (중세풍 크로스헤어)
-function updateCursor() {
-    if (!canvas) return;
-    if (selectedTower >= 0) {
-        // 건설 모드 — 중세풍 황금 크로스헤어
-        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
+// 숫자 천단위 콤마 포맷 (정수만 — 소수점 값은 호출 측에서 toFixed 처리)
+function fmt(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return String(n);
+    return Math.floor(n).toLocaleString('en-US');
+}
+
+// hex 색을 amount만큼 밝게 (FloatingText 그라디언트용)
+function lightenHex(hex, amount) {
+    if (!hex || hex[0] !== '#' || hex.length < 7) return hex;
+    const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
+    const g = Math.min(255, parseInt(hex.slice(3, 5), 16) + amount);
+    const b = Math.min(255, parseInt(hex.slice(5, 7), 16) + amount);
+    return `rgb(${r},${g},${b})`;
+}
+
+// 클릭 가능 영역 hotspot — 매 프레임 draw()에서 reset 후 그리는 시점에 push
+let pointerHotspots = [];
+function addPointerHotspot(x, y, w, h) {
+    pointerHotspots.push({ x: x, y: y, w: w, h: h });
+}
+function isOverHotspot(px, py) {
+    for (let i = 0; i < pointerHotspots.length; i++) {
+        const r = pointerHotspots[i];
+        if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return true;
+    }
+    return false;
+}
+
+const CURSOR_CROSSHAIR = (function () {
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
 <circle cx='16' cy='16' r='11' fill='none' stroke='%23000' stroke-width='4' opacity='0.45'/>
 <circle cx='16' cy='16' r='11' fill='none' stroke='%23ffd84a' stroke-width='2'/>
 <circle cx='16' cy='16' r='7' fill='none' stroke='%23ffd84a' stroke-width='1' opacity='0.6'/>
@@ -169,9 +195,23 @@ function updateCursor() {
 <path d='M30 16 L21 18 L23 16 L21 14 Z' fill='%23ffd84a' stroke='%23000' stroke-width='0.6'/>
 <circle cx='16' cy='16' r='1.8' fill='%23ff4020'/>
 </svg>`;
-        canvas.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+})();
+let _lastCursor = '';
+// 마우스 위치 + selectedTower + hotspot 상태에 따라 커서 결정
+function updateCursor() {
+    if (!canvas) return;
+    let target;
+    if (typeof mousePos !== 'undefined' && isOverHotspot(mousePos.x, mousePos.y)) {
+        target = 'pointer';
+    } else if (selectedTower >= 0) {
+        target = CURSOR_CROSSHAIR;
     } else {
-        canvas.style.cursor = 'default';
+        target = 'default';
+    }
+    if (_lastCursor !== target) {
+        _lastCursor = target;
+        canvas.style.cursor = target;
     }
 }
 let hoveredTile = null;
@@ -216,13 +256,13 @@ let lang = (navigator.language || 'ko').startsWith('ko') ? 'ko' : 'en';
 // ---- Localization ----
 const L = {
     ko: {
-        towerNames: ['화살탑', '대포탑', '냉기탑', '번개탑', '독타워'],
-        towerShort: ['화살', '대포', '냉기', '번개', '독'],
-        towerDesc: ['빠른 공격, 치명타', '범위 공격', '감속 효과', '장거리 연쇄', '지속 독 피해'],
-        waveClear: (w, g) => `웨이브 ${w} 클리어! +${g}G`,
-        waveNum: (w) => `웨이브 ${w}`,
-        bossAppear: (w) => `웨이브 ${w} - 보스 출현!`,
-        nextWave: (s) => `다음 웨이브: ${s}초`,
+        towerNames: ['화살탑', '대포탑', '번개탑', '냉기탑', '독타워'],
+        towerShort: ['화살', '대포', '번개', '냉기', '독'],
+        towerDesc: ['빠른 공격, 치명타', '범위 공격', '장거리 연쇄', '감속 효과', '지속 독 피해'],
+        waveClear: (w, g) => `웨이브 ${fmt(w)} 클리어! +${fmt(g)}G`,
+        waveNum: (w) => `웨이브 ${fmt(w)}`,
+        bossAppear: (w) => `웨이브 ${fmt(w)} - 보스 출현!`,
+        nextWave: (s) => `다음 웨이브: ${fmt(s)}초`,
         startPrompt: '스페이스바 / 탭으로 시작',
         startPromptMobile: '탭으로 시작',
         skipPrompt: '스페이스바 / 탭으로 스킵',
@@ -231,13 +271,13 @@ const L = {
         restartMobile: '탭하여 다시 시작',
         restartBtn: '다시 시작',
         gameOver: 'GAME OVER',
-        waveScore: (w, s) => `웨이브: ${w}  점수: ${s}`,
+        waveScore: (w, s) => `웨이브: ${fmt(w)}  점수: ${fmt(s)}`,
         newHighScore: '🏆 새 최고 점수!',
-        highScore: (s) => `최고 점수: ${s}`,
+        highScore: (s) => `최고 점수: ${fmt(s)}`,
         reviveAd: '🎬 광고 보고 부활 (+5 HP)',
-        speedLabels: ['▶ 보통', '▶▶ 빠르게', '▶▶▶ 최대'],
-        upgrade: (cost) => `업그레이드 ${cost}G`,
-        sell: (val) => `판매 ${val}G`,
+        speedLabels: ['×1', '×2', '×3'],
+        upgrade: (cost) => `업그레이드 ${fmt(cost)}G`,
+        sell: (val) => `판매 ${fmt(val)}G`,
         maxLevel: 'MAX LEVEL',
         atk: '공격력',
         range: '사거리',
@@ -246,22 +286,22 @@ const L = {
         shieldBreak: '방어막 파괴!',
         summon: '소환!',
         speedBurst: '가속!',
-        crit: '치명타!',
-        bossWarn: '⚠ BOSS WAVE ⚠',
-        rushWarn: '⚡ 러시 웨이브 ⚡',
-        heavyWarn: '🛡 헤비 웨이브 🛡',
-        swarmWarn: '🦠 스와름 웨이브 🦠',
+        crit: 'CRITICAL!',
+        bossWarn: '⚠ 보스 웨이브 ⚠',
+        rushWarn: '⚡ 적들이 빠르게 몰려와요! ⚡',
+        heavyWarn: '🛡 거대한 적들이 몰려옵니다! 🛡',
+        swarmWarn: '🦠 작은 적들이 떼지어 몰려옵니다! 🦠',
         rotatePlease: '화면을 가로로 돌려주세요',
         langLabel: '한/EN',
     },
     en: {
-        towerNames: ['Arrow', 'Cannon', 'Ice', 'Lightning', 'Poison'],
-        towerShort: ['Arrow', 'Cannon', 'Ice', 'Zap', 'Toxic'],
-        towerDesc: ['Fast, Critical', 'Splash', 'Slow 50%', 'Long Chain', 'DOT Poison'],
-        waveClear: (w, g) => `Wave ${w} Clear! +${g}G`,
-        waveNum: (w) => `Wave ${w}`,
-        bossAppear: (w) => `Wave ${w} - Boss Incoming!`,
-        nextWave: (s) => `Next Wave: ${s}s`,
+        towerNames: ['Arrow', 'Cannon', 'Lightning', 'Ice', 'Poison'],
+        towerShort: ['Arrow', 'Cannon', 'Zap', 'Ice', 'Toxic'],
+        towerDesc: ['Fast, Critical', 'Splash', 'Long Chain', 'Slow 50%', 'DOT Poison'],
+        waveClear: (w, g) => `Wave ${fmt(w)} Clear! +${fmt(g)}G`,
+        waveNum: (w) => `Wave ${fmt(w)}`,
+        bossAppear: (w) => `Wave ${fmt(w)} - Boss Incoming!`,
+        nextWave: (s) => `Next Wave: ${fmt(s)}s`,
         startPrompt: 'Space / Tap to Start',
         startPromptMobile: 'Tap to Start',
         skipPrompt: 'Space / Tap to Skip',
@@ -270,13 +310,13 @@ const L = {
         restartMobile: 'Tap to Restart',
         restartBtn: 'Restart',
         gameOver: 'GAME OVER',
-        waveScore: (w, s) => `Wave: ${w}  Score: ${s}`,
+        waveScore: (w, s) => `Wave: ${fmt(w)}  Score: ${fmt(s)}`,
         newHighScore: '🏆 New High Score!',
-        highScore: (s) => `High Score: ${s}`,
+        highScore: (s) => `High Score: ${fmt(s)}`,
         reviveAd: '🎬 Watch Ad to Revive (+5 HP)',
-        speedLabels: ['▶ Normal', '▶▶ Fast', '▶▶▶ Max'],
-        upgrade: (cost) => `Upgrade ${cost}G`,
-        sell: (val) => `Sell ${val}G`,
+        speedLabels: ['×1', '×2', '×3'],
+        upgrade: (cost) => `Upgrade ${fmt(cost)}G`,
+        sell: (val) => `Sell ${fmt(val)}G`,
         maxLevel: 'MAX LEVEL',
         atk: 'ATK',
         range: 'Range',
@@ -285,11 +325,11 @@ const L = {
         shieldBreak: 'Shield Down!',
         summon: 'Summon!',
         speedBurst: 'Rush!',
-        crit: 'CRIT!',
+        crit: 'CRITICAL!',
         bossWarn: '⚠ BOSS WAVE ⚠',
-        rushWarn: '⚡ RUSH WAVE ⚡',
-        heavyWarn: '🛡 HEAVY WAVE 🛡',
-        swarmWarn: '🦠 SWARM WAVE 🦠',
+        rushWarn: '⚡ Enemies are rushing in! ⚡',
+        heavyWarn: '🛡 Heavy enemies incoming! 🛡',
+        swarmWarn: '🦠 A swarm of small enemies! 🦠',
         rotatePlease: 'Please rotate to landscape',
         langLabel: '한/EN',
     },
@@ -314,10 +354,11 @@ class SoundManager {
             this.masterGain.connect(this.ctx.destination);
         } catch (e) { this.enabled = false; }
     }
-    canPlay(name) {
+    canPlay(name, customCd) {
         if (!this.enabled || !this.ctx || soundMuted) return false;
+        const cd = (customCd != null) ? customCd : this.cooldown;
         const now = this.ctx.currentTime;
-        if (this.lastPlayed[name] && now - this.lastPlayed[name] < this.cooldown) return false;
+        if (this.lastPlayed[name] && now - this.lastPlayed[name] < cd) return false;
         this.lastPlayed[name] = now;
         return true;
     }
@@ -350,41 +391,140 @@ class SoundManager {
         src.start(t);
         return { src, g, t };
     }
+    // 대역 통과 노이즈 — 더 자연스러운 효과음 합성용
+    filteredNoise(dur, vol, filterType, freq, q) {
+        const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = filterType || 'bandpass';
+        filter.frequency.value = freq || 1000;
+        filter.Q.value = q || 1;
+        const g = this.ctx.createGain();
+        g.gain.value = vol || 0.15;
+        src.connect(filter);
+        filter.connect(g);
+        g.connect(this.masterGain);
+        const t = this.ctx.currentTime;
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        src.start(t);
+        return { src, filter, g, t };
+    }
+    // 화살 — 작고 짧은 활시위 + 옅은 휘이익. 다른 발사음의 1/3 볼륨대
     arrowFire() {
         if (!this.canPlay('arrow')) return;
-        const { o, g, t } = this.osc('square', 880, 0.08, 0.12);
-        o.frequency.exponentialRampToValueAtTime(440, t + 0.08);
+        const t = this.ctx.currentTime;
+        // 활시위 - 짧고 옅은 트라이앵글 sweep
+        const { o } = this.osc('triangle', 1100, 0.05, 0.035);
+        o.frequency.exponentialRampToValueAtTime(420, t + 0.05);
+        // 꼬리 휘이익 - 고대역 노이즈 매우 옅게
+        this.filteredNoise(0.04, 0.025, 'highpass', 2200, 0.7);
     }
+    // 대포 — 자극 완화 (게인/노이즈 추가 ↓, 펑 컷오프 낮춤)
     cannonFire() {
         if (!this.canPlay('cannon')) return;
-        const { o, g, t } = this.osc('sine', 150, 0.2, 0.25);
-        o.frequency.exponentialRampToValueAtTime(40, t + 0.2);
-        this.noise(0.15, 0.12);
+        const t = this.ctx.currentTime;
+        // 임팩트 - 저주파 sweep (vol 0.28 → 0.2)
+        const { o: o1 } = this.osc('sine', 170, 0.2, 0.2);
+        o1.frequency.exponentialRampToValueAtTime(40, t + 0.2);
+        // 펑 - 노이즈 (vol 0.16 → 0.1, lowpass 1400 → 1000Hz로 더 둔하게)
+        this.filteredNoise(0.07, 0.1, 'lowpass', 1000, 0.6);
+        // 잔향 (게인 0.12 → 0.085)
+        const o2 = this.ctx.createOscillator();
+        const g2 = this.ctx.createGain();
+        o2.type = 'sine';
+        o2.frequency.value = 60;
+        g2.gain.setValueAtTime(0.0001, t);
+        g2.gain.linearRampToValueAtTime(0.085, t + 0.03);
+        g2.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        o2.connect(g2);
+        g2.connect(this.masterGain);
+        o2.start(t);
+        o2.stop(t + 0.23);
     }
+    // 얼음 — 거의 안 들리는 배경음 수준. 단일 sine, 노이즈 제거, vol 0.012
     iceFire() {
-        if (!this.canPlay('ice')) return;
-        this.osc('sine', 1200, 0.12, 0.08);
-        this.osc('sine', 1500, 0.12, 0.08);
+        if (!this.canPlay('ice', 0.1)) return;
+        const t = this.ctx.currentTime;
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = 'sine';
+        o.frequency.value = 1800;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.012, t + 0.004);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        o.connect(g);
+        g.connect(this.masterGain);
+        o.start(t);
+        o.stop(t + 0.12);
     }
+    // 번개 — 저음 "찌리리" (triangle 320→200Hz로 한 옥타브 더 ↓, vibrato 폭/볼륨 완화).
     lightningFire() {
         if (!this.canPlay('lightning')) return;
-        this.noise(0.1, 0.1);
-        const { o, g, t } = this.osc('sawtooth', 600, 0.1, 0.1);
-        o.frequency.exponentialRampToValueAtTime(100, t + 0.1);
+        const t = this.ctx.currentTime;
+        const dur = 0.18;
+
+        // Carrier — triangle 200Hz (저음 베이스 영역)
+        const carrier = this.ctx.createOscillator();
+        carrier.type = 'triangle';
+        carrier.frequency.value = 200;
+
+        // Vibrato — 22Hz로 떨리되 폭 60→40으로 완화
+        const modulator = this.ctx.createOscillator();
+        modulator.type = 'sine';
+        modulator.frequency.value = 22;
+        const modGain = this.ctx.createGain();
+        modGain.gain.value = 40;
+        modulator.connect(modGain);
+        modGain.connect(carrier.frequency);
+
+        // gain envelope 두 펄스 (볼륨 0.05/0.04 → 0.038/0.03)
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.038, t + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.005, t + 0.075);
+        g.gain.linearRampToValueAtTime(0.03, t + 0.09);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        carrier.connect(g);
+        g.connect(this.masterGain);
+        carrier.start(t);
+        carrier.stop(t + dur + 0.02);
+        modulator.start(t);
+        modulator.stop(t + dur + 0.02);
+
+        // 노이즈 더 옅게 (1500→1200Hz highpass, vol 0.014→0.01)
+        this.filteredNoise(0.035, 0.01, 'highpass', 1200, 1.0);
     }
+    // 독 — 보글보글: 저주파 다단 진동 + 미세 거품 노이즈
     poisonFire() {
         if (!this.canPlay('poison')) return;
-        const { o, g, t } = this.osc('sine', 200, 0.15, 0.1);
-        o.frequency.setValueAtTime(200, t);
-        o.frequency.linearRampToValueAtTime(300, t + 0.04);
-        o.frequency.linearRampToValueAtTime(150, t + 0.08);
-        o.frequency.linearRampToValueAtTime(250, t + 0.12);
+        const t = this.ctx.currentTime;
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(180, t);
+        o.frequency.linearRampToValueAtTime(290, t + 0.04);
+        o.frequency.linearRampToValueAtTime(150, t + 0.09);
+        o.frequency.linearRampToValueAtTime(245, t + 0.14);
+        o.frequency.linearRampToValueAtTime(170, t + 0.19);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.13, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        o.connect(g);
+        g.connect(this.masterGain);
+        o.start(t);
+        o.stop(t + 0.24);
+        // 미세 거품 - 저대역 노이즈 옅게
+        this.filteredNoise(0.1, 0.045, 'lowpass', 600, 0.5);
     }
+    // 적 사망 — 부드러운 lowpass puff만 (sine pop 제거 → "뿅" 톤 누적 방지).
+    // cooldown 0.18s로 늘려 다수 사망 시에도 끊임없이 쌓이지 않게.
     enemyDeath() {
-        if (!this.canPlay('edeath')) return;
-        this.noise(0.12, 0.08);
-        const { o, g, t } = this.osc('sine', 400, 0.15, 0.1);
-        o.frequency.exponentialRampToValueAtTime(100, t + 0.15);
+        if (!this.canPlay('edeath', 0.18)) return;
+        this.filteredNoise(0.04, 0.018, 'lowpass', 600, 0.4);
     }
     bossDeath() {
         if (!this.canPlay('bdeath')) return;
@@ -551,7 +691,7 @@ const MAPS = [
             { x: 20, y: 12 },
         ],
     },
-    // 2: 미로 루프 (ㄷ자 경로 2개 연결)
+    // 2: 미로 루프 (ㄷ자 경로 3개 연결 — 중앙 추가 꼬임으로 단조로움 해소)
     {
         name: 'Loop',
         waypoints: [
@@ -560,6 +700,10 @@ const MAPS = [
             { x: 6, y: 6 },
             { x: 1, y: 6 },
             { x: 1, y: 11 },
+            { x: 7, y: 11 },
+            { x: 7, y: 8 },   // ← 중앙 위쪽 작은 ㄷ자 시작
+            { x: 10, y: 8 },
+            { x: 10, y: 11 }, // ← 중앙 ㄷ자 끝
             { x: 13, y: 11 },
             { x: 13, y: 3 },
             { x: 18, y: 3 },
@@ -784,73 +928,47 @@ function generateBackgroundCache() {
     }
     octx.globalAlpha = 1;
 
-    // 경로 타일 — 한번에 묶어서 통합 path로
-    octx.fillStyle = '#9a7a4a';
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            if (grid[r][c] === 0) continue;
-            octx.fillRect(c * TILE, r * TILE, TILE, TILE);
+    // 경로: waypoints 따라 두꺼운 stroke 라인으로 그려서 자연스러운 둥근 모서리.
+    // 4겹: (1) 어두운 그림자 외곽 → (2) 진한 흙 띠 → (3) 메인 흙 → (4) 가운데 밝은 하이라이트
+    function strokeWaypoints(width, color, alpha) {
+        octx.globalAlpha = alpha == null ? 1 : alpha;
+        octx.strokeStyle = color;
+        octx.lineWidth = width;
+        octx.lineCap = 'round';
+        octx.lineJoin = 'round';
+        octx.beginPath();
+        for (let i = 0; i < waypoints.length; i++) {
+            const wp = waypoints[i];
+            const px = wp.x * TILE + TILE / 2;
+            const py = wp.y * TILE + TILE / 2;
+            if (i === 0) octx.moveTo(px, py);
+            else octx.lineTo(px, py);
         }
+        octx.stroke();
+        octx.globalAlpha = 1;
     }
+    // (1) 어두운 외곽 띠 (전체 윤곽 그림자)
+    strokeWaypoints(TILE * 1.06, '#2c1d0c', 0.85);
+    // (2) 진한 흙 가장자리 (외곽 약간 안쪽 — 깊이감)
+    strokeWaypoints(TILE * 0.98, '#5a3d1c');
+    // (3) 메인 흙 색
+    strokeWaypoints(TILE * 0.86, '#8d6a3c');
+    // (4) 가운데 밝은 하이라이트 (좁은 띠, 살짝 투명)
+    strokeWaypoints(TILE * 0.42, '#a98558', 0.55);
+    // (5) 중앙 미세 광택 — 진행 방향감
+    strokeWaypoints(TILE * 0.18, '#c19868', 0.35);
 
-    // 경로 라디얼 그라디언트로 깊이감 (약한 그늘)
-    octx.globalAlpha = 0.35;
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            if (grid[r][c] === 0) continue;
-            const x = c * TILE;
-            const y = r * TILE;
-            const pathGrad = octx.createRadialGradient(
-                x + TILE * 0.5, y + TILE * 0.5, TILE * 0.15,
-                x + TILE * 0.5, y + TILE * 0.5, TILE * 0.75
-            );
-            pathGrad.addColorStop(0, 'rgba(180,150,100,0)');
-            pathGrad.addColorStop(1, 'rgba(60,40,20,0.6)');
-            octx.fillStyle = pathGrad;
-            octx.fillRect(x, y, TILE, TILE);
-        }
-    }
-    octx.globalAlpha = 1;
-
-    // 경로 외곽선을 단일 패스로 모아서 한 번에 stroke
-    octx.strokeStyle = 'rgba(40,25,10,0.5)';
-    octx.lineWidth = Math.max(1, TILE / 36);
-    octx.beginPath();
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            if (grid[r][c] === 0) continue;
-            const x = c * TILE;
-            const y = r * TILE;
-            if (r === 0 || grid[r - 1][c] === 0) {
-                octx.moveTo(x, y);
-                octx.lineTo(x + TILE, y);
-            }
-            if (r === ROWS - 1 || grid[r + 1][c] === 0) {
-                octx.moveTo(x, y + TILE);
-                octx.lineTo(x + TILE, y + TILE);
-            }
-            if (c === 0 || grid[r][c - 1] === 0) {
-                octx.moveTo(x, y);
-                octx.lineTo(x, y + TILE);
-            }
-            if (c === COLS - 1 || grid[r][c + 1] === 0) {
-                octx.moveTo(x + TILE, y);
-                octx.lineTo(x + TILE, y + TILE);
-            }
-        }
-    }
-    octx.stroke();
-
-    // 부드러운 흙 얼룩 (경로 위 랜덤 점들)
-    octx.globalAlpha = 0.15;
-    octx.fillStyle = '#6a4a28';
-    for (let i = 0; i < 40; i++) {
+    // 부드러운 진한 흙 얼룩 (경로 위 랜덤 점들 — grid path 셀 안에서만)
+    octx.globalAlpha = 0.22;
+    const muddyColors = ['#4a3018', '#6a4828', '#3d2410'];
+    for (let i = 0; i < 60; i++) {
         const c = Math.floor((i * 17) % COLS);
         const r = Math.floor((i * 29) % ROWS);
         if (grid[r][c] === 0) continue;
         const x = c * TILE + ((i * 7) % TILE);
         const y = r * TILE + ((i * 11) % TILE);
-        const rs = 2 + ((i * 3) % 4);
+        const rs = 2 + ((i * 3) % 5);
+        octx.fillStyle = muddyColors[i % muddyColors.length];
         octx.beginPath();
         octx.arc(x, y, rs, 0, Math.PI * 2);
         octx.fill();
@@ -1287,21 +1405,6 @@ const TOWER_TYPES = [
     },
     {
         nameKey: 2,
-        cost: 75,
-        damage: 5,
-        range: 2.5,
-        fireRate: 0.6,
-        color: '#4488cc',
-        colorDark: '#225588',
-        projColor: '#88ddff',
-        projSpeed: 6,
-        splash: 0.6,
-        slow: 0.5,
-        poison: 0,
-        icon: 'ice',
-    },
-    {
-        nameKey: 3,
         cost: 130,
         damage: 18,
         range: 3.5,
@@ -1317,6 +1420,21 @@ const TOWER_TYPES = [
         chainRange: 2.5,
         chainDecay: 0.7,
         icon: 'lightning',
+    },
+    {
+        nameKey: 3,
+        cost: 75,
+        damage: 5,
+        range: 2.5,
+        fireRate: 0.6,
+        color: '#4488cc',
+        colorDark: '#225588',
+        projColor: '#88ddff',
+        projSpeed: 6,
+        splash: 0.6,
+        slow: 0.5,
+        poison: 0,
+        icon: 'ice',
     },
     {
         nameKey: 4,
@@ -1436,13 +1554,20 @@ class Particle {
 
 // ---- Floating text ----
 class FloatingText {
-    constructor(x, y, text, color) {
+    constructor(x, y, text, color, style) {
         this.x = x;
         this.y = y;
         this.text = text;
         this.color = color;
-        this.life = 1.0;
-        this.vy = -1.5;
+        this.style = style || 'normal'; // 'normal' | 'crit' | 'dmg'
+        if (this.style === 'crit') {
+            this.life = 1.4; this.vy = -1.1;
+        } else if (this.style === 'dmg') {
+            this.life = 0.6; this.vy = -1.3;
+        } else {
+            this.life = 1.0; this.vy = -1.5;
+        }
+        this.maxLife = this.life;
     }
 }
 
@@ -2044,10 +2169,9 @@ function update(dt) {
             proj.target.hitFlash = 1;
             proj.tower.totalDamage += dmg;
 
-            // Crit effects
+            // Crit effects (사운드 제거: 치명타 처치 시 enemyDeath와 누적되며 "뿅" 톤 거슬림)
             if (proj.isCrit) {
-                floatingTexts.push(new FloatingText(proj.target.x, proj.target.y - 25, txt().crit, '#ffdd44'));
-                soundManager.arrowCrit();
+                floatingTexts.push(new FloatingText(proj.target.x, proj.target.y - 28, txt().crit, '#ffdd44', 'crit'));
                 for (let ci = 0; ci < 8; ci++) {
                     const ca = Math.random() * Math.PI * 2;
                     particles.push(new Particle(proj.target.x, proj.target.y, '#ffdd44',
@@ -2114,7 +2238,7 @@ function update(dt) {
 
             // Chain lightning
             if (proj.towerTypeIndex === 3 && proj.target.alive) {
-                const chainType = TOWER_TYPES[3];
+                const chainType = TOWER_TYPES[2];
                 const chainRange = chainType.chainRange * TILE;
                 let chainDamage = proj.damage * chainType.chainDecay;
                 let lastTarget = proj.target;
@@ -2158,7 +2282,7 @@ function update(dt) {
                     lastTarget = nearest;
                     chainDamage *= chainType.chainDecay;
                 }
-                soundManager.lightningChain();
+                // 사운드 호출 제거: 체인 바운스마다 누적되어 거슬림. 시각 효과(지그재그)만 유지.
             }
 
             // Check enemy death
@@ -2299,6 +2423,9 @@ function drawRoundRect(x, y, w, h, r) {
 // ---- Draw ----
 function draw() {
     ctx.clearRect(0, 0, W, H);
+
+    // 매 프레임 hotspot 리셋 — 그리는 시점에 push되어 mousemove hit-test에 사용
+    pointerHotspots.length = 0;
 
     const gameH = ROWS * TILE;
 
@@ -2449,6 +2576,9 @@ function draw() {
 
     // Draw towers
     for (const tower of towers) {
+        // 타워 셀은 클릭 가능 (업그레이드 패널 열기)
+        addPointerHotspot(tower.col * TILE, tower.row * TILE, TILE, TILE);
+
         // Tower shadow
         ctx.fillStyle = 'rgba(0,0,0,0.2)';
         ctx.beginPath();
@@ -2893,14 +3023,67 @@ function draw() {
     }
     ctx.globalAlpha = 1;
 
-    // Draw floating texts
+    // Draw floating texts (통일된 디자인: 900 weight + Segoe UI + 외곽선 + 그라디언트 + 글로우 + 등장 펄스)
     for (const ft of floatingTexts) {
-        ctx.globalAlpha = ft.life;
-        ctx.fillStyle = ft.color;
-        ctx.font = `bold ${Math.floor(TILE * 0.35)}px sans-serif`;
+        const isCrit = ft.style === 'crit';
+        const elapsed = ft.maxLife - ft.life;
+
+        // 등장 시 스케일 펄스 — crit은 더 크고 길게
+        const popDur = isCrit ? 0.12 : 0.08;
+        const popT = Math.min(1, elapsed / popDur);
+        const scale = isCrit ? (1.5 - 0.5 * popT) : (1.25 - 0.25 * popT);
+        const tilt = isCrit ? Math.sin(elapsed * 14) * 0.04 : 0;
+        const fade = isCrit ? Math.min(1, ft.life * 1.6) : Math.min(1, ft.life * 1.4);
+
+        const fontSize = Math.floor(TILE * 0.36);
+        const font = `900 ${fontSize}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        const strokeColor = isCrit ? '#2a0404' : '#1a1a22';
+        const strokeW = isCrit ? 5 : 3;
+        const glowBlur = isCrit ? 20 : 7;
+        const glowColor = isCrit ? '#ff2020' : ft.color;
+
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(ft.x, ft.y);
+        if (tilt) ctx.rotate(tilt);
+        ctx.scale(scale, scale);
+        ctx.font = font;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(ft.text, ft.x, ft.y);
+
+        // 외곽선 + 글로우
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = glowBlur;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = strokeW;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(ft.text, 0, 0);
+        ctx.shadowBlur = 0;
+
+        // 그라디언트 채우기 (위 밝게 → 아래 원색)
+        const grad = ctx.createLinearGradient(0, -fontSize * 0.55, 0, fontSize * 0.55);
+        if (isCrit) {
+            // 황금→빨강: 골드(노랑) FloatingText와 명확히 구분
+            grad.addColorStop(0, '#ffe080');
+            grad.addColorStop(0.4, '#ff5028');
+            grad.addColorStop(1, '#cc0808');
+        } else {
+            grad.addColorStop(0, lightenHex(ft.color, 70));
+            grad.addColorStop(1, ft.color);
+        }
+        ctx.fillStyle = grad;
+        ctx.fillText(ft.text, 0, 0);
+
+        // 상단 광택 띠 (crit 전용 — normal은 생략해 덜 화려하게)
+        if (isCrit) {
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.beginPath();
+            const w = ctx.measureText(ft.text).width;
+            ctx.rect(-w / 2, -fontSize * 0.45, w, fontSize * 0.2);
+            ctx.clip();
+            ctx.fillText(ft.text, 0, 0);
+        }
+        ctx.restore();
     }
     ctx.globalAlpha = 1;
 
@@ -2923,11 +3106,23 @@ function draw() {
             textX = W * (0.5 + (1 - t) * 0.8);
             textAlpha = t;
         }
-        ctx.globalAlpha = textAlpha * 0.8;
-        ctx.fillStyle = '#88ccff';
-        ctx.font = `bold ${Math.floor(TILE * 0.6)}px sans-serif`;
+        ctx.globalAlpha = textAlpha * 0.9;
+        ctx.font = `900 ${Math.floor(TILE * 0.6)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        // 외곽선 + 글로우
+        ctx.shadowColor = 'rgba(40,80,140,0.85)';
+        ctx.shadowBlur = 14;
+        ctx.strokeStyle = '#0e1a30';
+        ctx.lineWidth = 5;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(txt().waveNum(waveTransitionNum), textX, ROWS * TILE * 0.45);
+        ctx.shadowBlur = 0;
+        // 그라디언트 채우기
+        const wtg = ctx.createLinearGradient(0, ROWS * TILE * 0.45 - TILE * 0.3, 0, ROWS * TILE * 0.45 + TILE * 0.3);
+        wtg.addColorStop(0, '#dceeff');
+        wtg.addColorStop(1, '#5aa8ff');
+        ctx.fillStyle = wtg;
         ctx.fillText(txt().waveNum(waveTransitionNum), textX, ROWS * TILE * 0.45);
         ctx.globalAlpha = 1;
     }
@@ -2945,10 +3140,10 @@ function draw() {
         const hasProgress = waveActive && waveTotalEnemies > 0;
 
         // 텍스트 측정 (두 세그먼트 분리)
-        const mainFont = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`;
-        const progFont = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", system-ui, sans-serif`;
+        const mainFont = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        const progFont = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         const mainLabel = txt().waveNum(Math.max(1, wave));
-        const progLabel = `${remaining} / ${waveTotalEnemies}`;
+        const progLabel = `${fmt(remaining)} / ${fmt(waveTotalEnemies)}`;
         ctx.font = mainFont;
         const mainW = ctx.measureText(mainLabel).width;
         ctx.font = progFont;
@@ -2987,25 +3182,36 @@ function draw() {
             ctx.restore();
         }
 
-        const centerY = pillY + pillH / 2 + 1;
+        const centerY = pillY + pillH / 2;
+        const mainFs = Math.floor(TILE * 0.3);
+        const progFs = Math.floor(TILE * 0.25);
+        // alphabetic baseline 기반 텍스트 시각 중심: baseline = boxCenter + fontSize × 0.34
+        const textBaselineY = centerY + mainFs * 0.34;
+        const iconCy = centerY;
 
-        // 아이콘 (크로스드 소드)
+        // 아이콘 — 두 검 X자 (vector, emoji 폰트 의존 없는 정확한 정렬)
         ctx.save();
-        ctx.translate(pillX + pillPad + iconW / 2, centerY - 1);
-        ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ff8888' : '#88ccff';
-        ctx.font = `${Math.floor(TILE * 0.32)}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('⚔', 0, 1);
+        const iconCx = pillX + pillPad + iconW / 2;
+        const iconColor = wave > 0 && wave % 5 === 0 ? '#ff8888' : '#88ccff';
+        ctx.strokeStyle = iconColor;
+        ctx.lineWidth = Math.max(2, Math.floor(TILE * 0.045));
+        ctx.lineCap = 'round';
+        const iconR = mainFs * 0.42;  // 텍스트 폰트 사이즈 기반 (시각 높이 매칭)
+        ctx.beginPath();
+        ctx.moveTo(iconCx - iconR, iconCy - iconR);
+        ctx.lineTo(iconCx + iconR, iconCy + iconR);
+        ctx.moveTo(iconCx + iconR, iconCy - iconR);
+        ctx.lineTo(iconCx - iconR, iconCy + iconR);
+        ctx.stroke();
         ctx.restore();
 
-        // 메인 라벨 (웨이브 번호)
+        // 메인 라벨 (웨이브 번호) — alphabetic baseline + 시각 중심 보정
         ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ffd0d0' : '#ffffff';
         ctx.font = mainFont;
         ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
+        ctx.textBaseline = 'alphabetic';
         const mainX = pillX + pillPad + iconW + 6;
-        ctx.fillText(mainLabel, mainX, centerY);
+        ctx.fillText(mainLabel, mainX, textBaselineY);
 
         // 구분선 + 진행도 (완전히 다른 톤)
         if (hasProgress) {
@@ -3017,11 +3223,12 @@ function draw() {
             ctx.moveTo(sepX, pillY + pillH * 0.25);
             ctx.lineTo(sepX, pillY + pillH * 0.75);
             ctx.stroke();
-            // 진행도 (작고 노란색 톤)
-            ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ffaa80' : '#ffcc55';
+            // 진행도 (작고 노란색 톤) — 같은 baseline 보정 비율
             ctx.font = progFont;
+            ctx.fillStyle = wave > 0 && wave % 5 === 0 ? '#ffaa80' : '#ffcc55';
             ctx.textAlign = 'left';
-            ctx.fillText(progLabel, sepX + sepGap, centerY);
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillText(progLabel, sepX + sepGap, centerY + progFs * 0.34);
         }
     }
 
@@ -3055,12 +3262,12 @@ function draw() {
             ctx.fill();
             // 텍스트 (이름 + HP 숫자)
             ctx.fillStyle = '#ffffff';
-            ctx.font = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `bold ${Math.floor(TILE * 0.25)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.shadowColor = 'rgba(0,0,0,0.8)';
             ctx.shadowBlur = 3;
-            const bossLabel = (lang === 'ko' ? '보스' : 'BOSS') + ` · ${Math.ceil(boss.hp)} / ${boss.maxHp}`;
+            const bossLabel = (lang === 'ko' ? '보스' : 'BOSS') + ` · ${fmt(Math.ceil(boss.hp))} / ${fmt(boss.maxHp)}`;
             ctx.fillText(bossLabel, bx1 + bw / 2, by + bh / 2 + 1);
             ctx.shadowBlur = 0;
             // 실드 바 (작게)
@@ -3100,45 +3307,46 @@ function draw() {
     ctx.lineTo(W, uiY + TILE * 0.8);
     ctx.stroke();
 
-    // 좌우 공통 패딩
-    const UI_PAD = Math.max(10, Math.floor(TILE * 0.22));
+    // 통일 메트릭 — 좌우 패딩과 모든 gap을 동일 값으로 통일
+    const itemGap = Math.max(8, Math.floor(TILE * 0.16));
+    const UI_PAD = itemGap;
+    const barH = TILE * 0.8;
+    const itemH = Math.floor(TILE * 0.65);  // 스탯/버튼 공통 높이
+    const itemY = uiY + Math.floor((barH - itemH) / 2);
 
     // Stats — 개별 뱃지 (gold / lives / score 3개)
     ctx.textBaseline = 'middle';
-    const barH = TILE * 0.8;
-    const badgePad = 4;
-    const badgeH = barH - badgePad * 2;
+    const badgeH = itemH;
     const badgeR = 8;
     const fontSize = Math.floor(TILE * 0.3);
     const iconSize = Math.floor(TILE * 0.28);
-    const statY = uiY + barH / 2;
+    const statY = itemY + itemH / 2;
 
     const stats = [
-        { icon: '💰', label: `${gold}`, color: '#ffdd44', glow: 'rgba(255,212,68,0.25)',
+        { icon: '💰', label: fmt(gold), color: '#ffdd44', glow: 'rgba(255,212,68,0.25)',
           bgA: 'rgba(80,60,20,0.45)', bgB: 'rgba(50,40,10,0.45)', border: 'rgba(255,212,68,0.35)' },
-        { icon: '❤', label: `${lives}`, color: '#ff8080', glow: 'rgba(255,90,90,0.25)',
+        { icon: '❤', label: fmt(lives), color: '#ff8080', glow: 'rgba(255,90,90,0.25)',
           bgA: 'rgba(80,25,30,0.45)', bgB: 'rgba(50,15,20,0.45)', border: 'rgba(255,100,100,0.35)' },
-        { icon: '★', label: `${score}`, color: '#cfd3ff', glow: 'rgba(170,180,240,0.25)',
+        { icon: '★', label: fmt(score), color: '#cfd3ff', glow: 'rgba(170,180,240,0.25)',
           bgA: 'rgba(45,50,80,0.45)', bgB: 'rgba(25,30,55,0.45)', border: 'rgba(160,170,230,0.3)' },
     ];
 
-    // 오른쪽 버튼 영역 (넉넉한 너비)
-    const btnGap = Math.max(8, Math.floor(TILE * 0.18));
-    const uniformBtnW = Math.max(Math.floor(TILE * 1.5), 76);
-    const btnH = Math.floor(TILE * 0.65);
-    const btnY = uiY + Math.floor((TILE * 0.8 - btnH) / 2);
+    // 오른쪽 버튼 영역 (높이/gap 통일)
+    const btnGap = itemGap;
+    const uniformBtnW = Math.max(Math.floor(TILE * 1.7), 92);
+    const btnH = itemH;
+    const btnY = itemY;
     const rightBtnsW = uniformBtnW * 3 + btnGap * 2;
 
-    // 왼쪽 스탯 뱃지 — 컨텐츠 크기 기반 (조금 더 여유)
-    const gap = Math.max(6, Math.floor(TILE * 0.12));
+    // 왼쪽 스탯 뱃지 (gap 통일)
+    const gap = itemGap;
     const badgeW = Math.max(Math.floor(TILE * 1.95), 100);
     const statsTotalW = badgeW * stats.length + gap * (stats.length - 1);
-    const dividerX = UI_PAD + statsTotalW + Math.max(10, Math.floor(TILE * 0.2));
     let bx = UI_PAD;
 
     for (let si = 0; si < stats.length; si++) {
         const st = stats[si];
-        const badgeY = uiY + badgePad;
+        const badgeY = itemY;
 
         // 뱃지 배경 (세로 그라디언트)
         const badgeGrad = ctx.createLinearGradient(0, badgeY, 0, badgeY + badgeH);
@@ -3176,7 +3384,7 @@ function draw() {
         ctx.save();
         ctx.shadowColor = st.glow;
         ctx.shadowBlur = 6;
-        ctx.font = `bold ${iconSize}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${iconSize}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillStyle = st.color;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -3184,7 +3392,7 @@ function draw() {
         ctx.restore();
 
         // 값 (뱃지 우측에 우측정렬)
-        ctx.font = `bold ${fontSize}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${fontSize}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
@@ -3193,19 +3401,7 @@ function draw() {
         bx += badgeW + gap;
     }
 
-    // 스탯 ↔ 버튼 구분 세로 디바이더
-    const divY1 = uiY + TILE * 0.2;
-    const divY2 = uiY + TILE * 0.6;
-    const divGrad = ctx.createLinearGradient(dividerX, divY1, dividerX, divY2);
-    divGrad.addColorStop(0, 'rgba(120,180,255,0)');
-    divGrad.addColorStop(0.5, 'rgba(120,180,255,0.4)');
-    divGrad.addColorStop(1, 'rgba(120,180,255,0)');
-    ctx.strokeStyle = divGrad;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(dividerX, divY1);
-    ctx.lineTo(dividerX, divY2);
-    ctx.stroke();
+    // (스탯 ↔ 버튼 세로 divider 제거 — 사용자 요청)
 
     // ---- Right-side buttons (모두 동일 너비) ----
     // 공통 버튼 렌더링 헬퍼
@@ -3254,11 +3450,12 @@ function draw() {
         border: gameSpeed === 1 ? 'rgba(120,140,180,0.45)' : gameSpeed === 2 ? 'rgba(136,204,68,0.6)' : 'rgba(255,100,70,0.6)',
         icon: speedLabel,
         iconColor: gameSpeed === 1 ? '#b4c0e0' : gameSpeed === 2 ? '#a8ff60' : '#ffa080',
-        iconFont: `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`,
+        iconFont: `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`,
         glow: speedActive ? (gameSpeed === 2 ? 'rgba(136,204,68,0.4)' : 'rgba(255,100,70,0.4)') : null,
         active: speedActive
     });
     window._speedBtn = { x: speedBtnX, y: btnY, w: uniformBtnW, h: btnH };
+    addPointerHotspot(speedBtnX, btnY, uniformBtnW, btnH);
     btnRight = speedBtnX - btnGap;
 
     // Volume button
@@ -3269,11 +3466,12 @@ function draw() {
         border: soundMuted ? 'rgba(255,100,70,0.6)' : 'rgba(120,140,180,0.45)',
         icon: soundMuted ? '🔇' : '🔊',
         iconColor: soundMuted ? '#ff8066' : '#b4c0e0',
-        iconFont: `${Math.floor(TILE * 0.35)}px sans-serif`,
+        iconFont: `${Math.floor(TILE * 0.35)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`,
         glow: soundMuted ? 'rgba(255,100,70,0.4)' : null,
         active: soundMuted
     });
     window._volBtn = { x: volBtnX, y: btnY, w: uniformBtnW, h: btnH };
+    addPointerHotspot(volBtnX, btnY, uniformBtnW, btnH);
     btnRight = volBtnX - btnGap;
 
     // Language button
@@ -3284,11 +3482,12 @@ function draw() {
         border: 'rgba(120,140,180,0.45)',
         icon: txt().langLabel,
         iconColor: '#b4c0e0',
-        iconFont: `bold ${Math.floor(TILE * 0.28)}px "Segoe UI", system-ui, sans-serif`,
+        iconFont: `bold ${Math.floor(TILE * 0.28)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`,
         glow: null,
         active: false
     });
     window._langBtn = { x: langBtnX, y: btnY, w: uniformBtnW, h: btnH };
+    addPointerHotspot(langBtnX, btnY, uniformBtnW, btnH);
 
     // Wave warning overlay (boss / rush / heavy)
     if (bossWarningTimer > 0 && waveType !== 'normal') {
@@ -3314,15 +3513,33 @@ function draw() {
         ctx.fillStyle = `${overlayColor} ${warnAlpha})`;
         ctx.fillRect(0, 0, W, ROWS * TILE);
 
-        ctx.fillStyle = textColor;
-        ctx.font = `bold ${Math.floor(TILE * 0.85)}px sans-serif`;
+        // 문장이 길어진 경우 가로 화면(90%)에 맞춰 폰트 자동 축소
+        let warnFs = Math.floor(TILE * 0.85);
+        const warnMaxW = W * 0.9;
+        ctx.font = `900 ${warnFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        while (ctx.measureText(warnText).width > warnMaxW && warnFs > 18) {
+            warnFs -= 2;
+            ctx.font = `900 ${warnFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        }
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.globalAlpha = Math.min(1, bossWarningTimer / 0.5);
+        // 외곽선 + 글로우
+        ctx.shadowColor = textColor;
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = '#1a0606';
+        ctx.lineWidth = Math.max(4, Math.floor(warnFs * 0.08));
+        ctx.lineJoin = 'round';
+        ctx.strokeText(warnText, W / 2, ROWS * TILE * 0.4);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = textColor;
         ctx.fillText(warnText, W / 2, ROWS * TILE * 0.4);
         if (waveType === 'boss') {
+            ctx.font = `900 ${Math.floor(TILE * 0.4)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+            ctx.strokeStyle = '#3a2a00';
+            ctx.lineWidth = 4;
+            ctx.strokeText(txt().bossAppear(wave), W / 2, ROWS * TILE * 0.55);
             ctx.fillStyle = '#ffcc44';
-            ctx.font = `bold ${Math.floor(TILE * 0.4)}px sans-serif`;
             ctx.fillText(txt().bossAppear(wave), W / 2, ROWS * TILE * 0.55);
         }
         ctx.globalAlpha = 1;
@@ -3336,13 +3553,14 @@ function draw() {
     const tBtnAvail = W - UI_PAD * 2 - tBtnGap * (TOWER_TYPES.length - 1);
     const btnW = Math.floor(tBtnAvail / TOWER_TYPES.length);
     const btnStartX = UI_PAD;
-    const innerPad = Math.max(8, Math.floor(TILE * 0.15));
+    const innerPad = Math.max(12, Math.floor(TILE * 0.22));
 
     for (let i = 0; i < TOWER_TYPES.length; i++) {
         const type = TOWER_TYPES[i];
         const bx = btnStartX + i * (btnW + tBtnGap);
         const isSelected = i === selectedTower;
         const canAfford = gold >= type.cost;
+        addPointerHotspot(bx, tBtnY, btnW, tBtnH);
 
         // Check hover
         const isHovered = mousePos.x >= bx && mousePos.x <= bx + btnW && mousePos.y >= tBtnY && mousePos.y <= tBtnY + tBtnH;
@@ -3399,7 +3617,7 @@ function draw() {
 
         // 타워 이름
         ctx.fillStyle = canAfford ? '#ffffff' : '#556';
-        ctx.font = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${Math.floor(TILE * 0.3)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         // 이름이 길면 폰트 축소
@@ -3407,34 +3625,48 @@ function draw() {
         let nfs = Math.floor(TILE * 0.3);
         while (ctx.measureText(nameText).width > textMaxW && nfs > 10) {
             nfs -= 1;
-            ctx.font = `bold ${nfs}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `bold ${nfs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         }
         ctx.fillText(nameText, textX, tBtnY + tBtnH * 0.3);
 
         // 비용 (골드 아이콘 + 숫자)
         ctx.fillStyle = canAfford ? '#ffdd44' : '#664422';
-        ctx.font = `bold ${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${Math.floor(TILE * 0.26)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.textBaseline = 'middle';
-        ctx.fillText(`${type.cost}G`, textX, tBtnY + tBtnH * 0.55);
+        ctx.fillText(`${fmt(type.cost)}G`, textX, tBtnY + tBtnH * 0.55);
 
         // 설명
         ctx.fillStyle = canAfford ? '#9aa3c0' : '#556';
-        ctx.font = `${Math.floor(TILE * 0.2)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `${Math.floor(TILE * 0.2)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         let descText = txt().towerDesc[type.nameKey];
         let dfs = Math.floor(TILE * 0.2);
         while (ctx.measureText(descText).width > textMaxW && dfs > 8) {
             dfs -= 1;
-            ctx.font = `${dfs}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `${dfs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         }
         ctx.fillText(descText, textX, tBtnY + tBtnH * 0.78);
 
-        // 키보드 힌트 (우측 상단, 데스크톱만)
+        // 키보드 힌트 — 우측 상단 키 캡 박스 (데스크톱만)
         if (!isMobile) {
-            ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.4)' : 'rgba(120,130,160,0.5)';
-            ctx.font = `bold ${Math.floor(TILE * 0.2)}px "Segoe UI", system-ui, sans-serif`;
-            ctx.textAlign = 'right';
-            ctx.textBaseline = 'top';
-            ctx.fillText(`${i + 1}`, bx + btnW - innerPad, tBtnY + innerPad * 0.6);
+            const keyTxt = `${i + 1}`;
+            const keyFs = Math.max(11, Math.floor(TILE * 0.26));
+            ctx.font = `900 ${keyFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+            const keyW = Math.max(keyFs + 14, ctx.measureText(keyTxt).width + 16);
+            const keyH = keyFs + 12;  // 위아래 패딩 더 넉넉히
+            const keyX = bx + btnW - innerPad - keyW;
+            const keyY = tBtnY + Math.max(8, Math.floor(TILE * 0.16));
+            // 키캡 배경
+            drawRoundRect(keyX, keyY, keyW, keyH, 4);
+            ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.18)' : 'rgba(60,70,100,0.55)';
+            ctx.fill();
+            ctx.strokeStyle = isSelected ? 'rgba(255,255,255,0.45)' : 'rgba(140,160,200,0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            // 키 라벨 — alphabetic baseline + 표준 폰트 비율(0.34)로 박스 정중앙
+            ctx.fillStyle = isSelected ? '#ffffff' : '#cfd8ec';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillText(keyTxt, keyX + keyW / 2, keyY + keyH / 2 + keyFs * 0.34);
         }
     }
     ctx.textBaseline = 'alphabetic';
@@ -3448,27 +3680,27 @@ function draw() {
         const btnH = Math.max(32, Math.floor(TILE * 0.7));
 
         // 텍스트 폭 측정해서 패널 너비 결정 (최소/최대 한계)
-        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         const titleStr = `${txt().towerNames[t.type.nameKey]} · Lv.${t.level}`;
         const titleW = ctx.measureText(titleStr).width;
 
-        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
-        const atkLine = `${txt().atk} ${t.damage}`;
+        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        const atkLine = `${txt().atk} ${fmt(t.damage)}`;
         const rngLine = `${txt().range} ${t.range.toFixed(1)}`;
         const rateLine = `${txt().atkSpeed} ${t.fireRate.toFixed(2)}s`;
-        const dmgLine = `${txt().totalDmg} ${t.totalDamage}`;
+        const dmgLine = `${txt().totalDmg} ${fmt(t.totalDamage)}`;
         const row1W = Math.max(ctx.measureText(atkLine).width, ctx.measureText(rateLine).width);
         const row2W = Math.max(ctx.measureText(rngLine).width, ctx.measureText(dmgLine).width);
         const statsW = row1W + row2W + Math.max(14, Math.floor(TILE * 0.3));
 
         // 버튼 라벨 측정: 모든 가능한 라벨(업그레이드, MAX LEVEL, 판매)의 최대 너비 기준
         const btnFontSize = Math.floor(TILE * 0.26);
-        ctx.font = `bold ${btnFontSize}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${btnFontSize}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         const upLabel = t.level < 5 ? txt().upgrade(t.upgradeCost) : txt().maxLevel;
         const sellLabel = txt().sell(t.sellValue);
         const allLabels = [upLabel, sellLabel, txt().maxLevel];
         const maxLabelW = Math.max(...allLabels.map(l => ctx.measureText(l).width));
-        const btnPadH = Math.max(18, Math.floor(TILE * 0.35));
+        const btnPadH = Math.max(24, Math.floor(TILE * 0.5));
         const btnMinW = Math.ceil(maxLabelW + btnPadH * 2);  // 좌우 패딩 대칭
         const btnsRowW = btnMinW * 2 + Math.max(10, Math.floor(TILE * 0.2));
 
@@ -3512,7 +3744,7 @@ function draw() {
         ctx.textBaseline = 'top';
         ctx.textAlign = 'left';
         ctx.fillStyle = t.type.color;
-        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${Math.floor(TILE * 0.36)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillText(titleStr, panelX + panelPad, py);
         py += Math.floor(TILE * 0.5) + rowGap;
 
@@ -3527,11 +3759,11 @@ function draw() {
         // 스탯 (2열 그리드)
         const col1X = panelX + panelPad;
         const col2X = panelX + panelW - panelPad - row2W;
-        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillStyle = '#aab4d0';
         ctx.fillText(txt().atk + ' ', col1X, py);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(t.damage + '', col1X + ctx.measureText(txt().atk + ' ').width, py);
+        ctx.fillText(fmt(t.damage), col1X + ctx.measureText(txt().atk + ' ').width, py);
         ctx.fillStyle = '#aab4d0';
         ctx.fillText(txt().range + ' ', col2X, py);
         ctx.fillStyle = '#ffffff';
@@ -3545,7 +3777,7 @@ function draw() {
         ctx.fillStyle = '#aab4d0';
         ctx.fillText(txt().totalDmg + ' ', col2X, py);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(t.totalDamage + '', col2X + ctx.measureText(txt().totalDmg + ' ').width, py);
+        ctx.fillText(fmt(t.totalDamage), col2X + ctx.measureText(txt().totalDmg + ' ').width, py);
         py += lineH + rowGap;
 
         // 버튼 영역 (업그레이드 + 판매) — 모두 동일 너비, 동일 패딩
@@ -3604,11 +3836,11 @@ function draw() {
             // 라벨 (동일 폰트, 동일 좌우 패딩, 넘치면 자동 축소)
             ctx.fillStyle = textColor;
             let fs = btnFontSize;
-            ctx.font = `bold ${fs}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `bold ${fs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             const innerW = bw - btnPadH * 2;
             while (ctx.measureText(label).width > innerW && fs > 10) {
                 fs -= 1;
-                ctx.font = `bold ${fs}px "Segoe UI", system-ui, sans-serif`;
+                ctx.font = `bold ${fs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             }
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -3620,6 +3852,7 @@ function draw() {
             const canUp = gold >= t.upgradeCost;
             drawActionBtn(upBtnX, btnsY, oneBtnW, btnH, 'upgrade', upLabel, canUp);
             t._upgradeBtn = { x: upBtnX, y: btnsY, w: oneBtnW, h: btnH };
+            addPointerHotspot(upBtnX, btnsY, oneBtnW, btnH);
         } else {
             drawActionBtn(upBtnX, btnsY, oneBtnW, btnH, 'max', upLabel, true);
             t._upgradeBtn = null;
@@ -3628,6 +3861,7 @@ function draw() {
         // Sell 버튼
         drawActionBtn(sellBtnX, btnsY, oneBtnW, btnH, 'sell', sellLabel, true);
         t._sellBtn = { x: sellBtnX, y: btnsY, w: oneBtnW, h: btnH };
+        addPointerHotspot(sellBtnX, btnsY, oneBtnW, btnH);
 
         // baseline 복원
         ctx.textBaseline = 'alphabetic';
@@ -3645,7 +3879,7 @@ function draw() {
             hintLabel = isMobile ? (lang === 'ko' ? '탭하세요' : 'Tap to begin')
                                   : (lang === 'ko' ? 'Space / Tap' : 'Space / Tap');
         } else {
-            mainLabel = (lang === 'ko' ? `웨이브 ${wave + 1} · ${countdown}초` : `Wave ${wave + 1} · ${countdown}s`);
+            mainLabel = (lang === 'ko' ? `웨이브 ${fmt(wave + 1)} · ${countdown}초` : `Wave ${fmt(wave + 1)} · ${countdown}s`);
             hintLabel = isMobile ? (lang === 'ko' ? '탭하여 스킵' : 'Tap to skip')
                                  : (lang === 'ko' ? 'Space / Tap to skip' : 'Space / Tap to skip');
         }
@@ -3653,19 +3887,27 @@ function draw() {
         // 측정
         const mainFS = Math.floor(TILE * 0.42);
         const hintFS = Math.floor(TILE * 0.22);
-        ctx.font = `bold ${mainFS}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `bold ${mainFS}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         const mainW = ctx.measureText(mainLabel).width;
-        ctx.font = `${hintFS}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `${hintFS}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         const hintW = ctx.measureText(hintLabel).width;
         const innerW = Math.max(mainW, hintW);
 
-        // 아이콘 공간
+        // 아이콘 공간 + 그룹 (아이콘 + 메인 라벨)을 박스 중앙에 배치
         const iconW = Math.floor(TILE * 0.55);
-        const boxPad = Math.max(16, Math.floor(TILE * 0.35));
-        const boxW = innerW + iconW + boxPad * 2 + 10;
+        const iconLabelGap = 14;
+        const boxPad = Math.max(22, Math.floor(TILE * 0.5));
+        const groupW = iconW + iconLabelGap + mainW;
+        // 박스 width: 그룹 + 좌우 패딩 + 여유 (가운데 정렬용 숨 통)
+        const boxW = Math.max(groupW + boxPad * 2 + 40, hintW + boxPad * 2 + 40);
         const boxH = Math.floor(TILE * 1.35);
         const boxX = Math.floor(W / 2 - boxW / 2);
-        const boxY = Math.floor(TILE * 0.35);
+        // 첫 시작은 화면(게임 영역) 정중앙, 다음 웨이브 카운트다운은 상단
+        const boxY = isStart
+            ? Math.floor((ROWS * TILE - boxH) / 2)
+            : Math.floor(TILE * 0.35);
+        addPointerHotspot(boxX, boxY, boxW, boxH);
+        window._startCtaBtn = { x: boxX, y: boxY, w: boxW, h: boxH };
 
         // 맥박 (scale + alpha)
         const pulseT = 0.5 + Math.sin(Date.now() / 400) * 0.5;
@@ -3698,34 +3940,49 @@ function draw() {
         drawRoundRect(boxX, boxY, boxW, boxH, boxH / 2);
         ctx.stroke();
 
-        // 왼쪽 아이콘 (▶ 삼각형)
-        const iconCX = boxX + boxPad + iconW / 2;
-        const iconCY = boxY + boxH / 2;
+        // 그룹(아이콘 + 메인 라벨)을 박스 중앙 정렬
+        const groupStartX = boxX + boxW / 2 - groupW / 2;
+        const iconCX = groupStartX + iconW / 2;
+        const iconCY = boxY + boxH * 0.42;
         ctx.save();
-        ctx.shadowColor = isStart ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.6)';
-        ctx.shadowBlur = 6;
-        ctx.fillStyle = '#ffffff';
         const tr = iconW * 0.4;
         ctx.beginPath();
         ctx.moveTo(iconCX - tr * 0.5, iconCY - tr * 0.9);
         ctx.lineTo(iconCX + tr, iconCY);
         ctx.lineTo(iconCX - tr * 0.5, iconCY + tr * 0.9);
         ctx.closePath();
+        // 외곽선 + 글로우 (메인 라벨과 통일)
+        ctx.shadowColor = isStart ? 'rgba(0,40,15,0.9)' : 'rgba(10,25,55,0.9)';
+        ctx.shadowBlur = 6;
+        ctx.strokeStyle = isStart ? '#0c2a14' : '#0a1a2e';
+        ctx.lineWidth = 4;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffffff';
         ctx.fill();
         ctx.restore();
 
-        // 메인 라벨
-        const textX = boxX + boxPad + iconW + 10;
+        // 메인 라벨 (그룹의 우측 부분 — left-align, 외곽선 + 글로우)
+        const textX = groupStartX + iconW + iconLabelGap;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
+        ctx.font = `900 ${mainFS}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        ctx.shadowColor = isStart ? 'rgba(0,40,15,0.9)' : 'rgba(10,25,55,0.9)';
+        ctx.shadowBlur = 6;
+        ctx.strokeStyle = isStart ? '#0c2a14' : '#0a1a2e';
+        ctx.lineWidth = 4;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(mainLabel, textX, boxY + boxH * 0.42);
+        ctx.shadowBlur = 0;
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold ${mainFS}px "Segoe UI", system-ui, sans-serif`;
-        ctx.fillText(mainLabel, textX, boxY + boxH * 0.38);
+        ctx.fillText(mainLabel, textX, boxY + boxH * 0.42);
 
-        // 힌트 라벨
+        // 힌트 라벨 (박스 중앙 하단 — center-align)
         ctx.fillStyle = isStart ? 'rgba(200,255,220,0.75)' : 'rgba(200,220,255,0.75)';
-        ctx.font = `${hintFS}px "Segoe UI", system-ui, sans-serif`;
-        ctx.fillText(hintLabel, textX, boxY + boxH * 0.75);
+        ctx.font = `${hintFS}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(hintLabel, boxX + boxW / 2, boxY + boxH * 0.78);
 
         ctx.textBaseline = 'alphabetic';
     }
@@ -3796,7 +4053,7 @@ function draw() {
             titleGrad.addColorStop(0, '#ff6060');
             titleGrad.addColorStop(1, '#cc2828');
             ctx.fillStyle = titleGrad;
-            ctx.font = `900 ${Math.floor(TILE * 0.85)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `900 ${Math.floor(TILE * 0.85)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(txt().gameOver, 0, 0);
@@ -3838,11 +4095,11 @@ function draw() {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillStyle = labelColor;
-            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             ctx.fillText(lang === 'ko' ? '웨이브' : 'WAVE', cardX + half * 0.5, cardY + cardH * 0.3);
             ctx.fillStyle = '#88ccff';
-            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", system-ui, sans-serif`;
-            ctx.fillText(`${wave}`, cardX + half * 0.5, cardY + cardH * 0.65);
+            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+            ctx.fillText(fmt(wave), cardX + half * 0.5, cardY + cardH * 0.65);
 
             // 세로 구분선
             ctx.strokeStyle = 'rgba(120,160,220,0.25)';
@@ -3854,11 +4111,11 @@ function draw() {
 
             // 점수
             ctx.fillStyle = labelColor;
-            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", system-ui, sans-serif`;
+            ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
             ctx.fillText(lang === 'ko' ? '점수' : 'SCORE', cardX + half + half * 0.5, cardY + cardH * 0.3);
             ctx.fillStyle = '#ffdd44';
-            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", system-ui, sans-serif`;
-            ctx.fillText(`${displayScore}`, cardX + half + half * 0.5, cardY + cardH * 0.65);
+            ctx.font = `bold ${Math.floor(TILE * 0.55)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+            ctx.fillText(fmt(displayScore), cardX + half + half * 0.5, cardY + cardH * 0.65);
             ctx.restore();
 
             // 최고 점수 (카드 아래 작은 뱃지)
@@ -3875,12 +4132,12 @@ function draw() {
                 ctx.shadowColor = '#ffcc44';
                 ctx.shadowBlur = 10 + Math.sin(Date.now() / 200) * 5;
                 ctx.fillStyle = '#ffdd55';
-                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", system-ui, sans-serif`;
+                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.fillText('🏆 ' + txt().newHighScore.replace(/🏆\s*/, ''), W / 2, hsY);
             } else {
                 ctx.fillStyle = '#8890a8';
-                ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", system-ui, sans-serif`;
+                ctx.font = `${Math.floor(TILE * 0.26)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.fillText(txt().highScore(hs), W / 2, hsY);
             }
@@ -3939,7 +4196,7 @@ function draw() {
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillStyle = textColor;
-                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", system-ui, sans-serif`;
+                ctx.font = `bold ${Math.floor(TILE * 0.32)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
                 const fullText = (icon ? icon + '  ' : '') + label;
                 ctx.fillText(fullText, bx + bw / 2, by + bh / 2 + 1);
             }
@@ -3949,16 +4206,19 @@ function draw() {
                 drawCTA(btnX, btnsY, btnW, btnH, 'revive', '🎬',
                     lang === 'ko' ? '광고 보고 부활 +5HP' : 'Watch Ad · +5 HP', true);
                 window._rewardedAdBtn = { x: btnX, y: btnsY, w: btnW, h: btnH };
+                addPointerHotspot(btnX, btnsY, btnW, btnH);
 
                 // 재시작 CTA (아래)
                 const rstY = btnsY + btnH + btnGapV;
                 drawCTA(btnX, rstY, btnW, btnH, 'restart', '↻', txt().restartBtn, false);
                 window._restartBtn = { x: btnX, y: rstY, w: btnW, h: btnH };
+                addPointerHotspot(btnX, rstY, btnW, btnH);
             } else {
                 window._rewardedAdBtn = null;
                 // 재시작만 (맥박)
                 drawCTA(btnX, btnsY, btnW, btnH, 'restart', '↻', txt().restartBtn, true);
                 window._restartBtn = { x: btnX, y: btnsY, w: btnW, h: btnH };
+                addPointerHotspot(btnX, btnsY, btnW, btnH);
             }
             ctx.restore();
         }
@@ -3968,17 +4228,126 @@ function draw() {
     if (paused && !gameOver) {
         ctx.fillStyle = 'rgba(5,8,20,0.5)';
         ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `bold ${Math.floor(TILE * 0.7)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = `900 ${Math.floor(TILE * 0.7)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        const pauseLabel = '⏸  ' + (lang === 'ko' ? '일시정지' : 'PAUSED');
         ctx.shadowColor = 'rgba(0,0,0,0.8)';
         ctx.shadowBlur = 12;
-        ctx.fillText('⏸  ' + (lang === 'ko' ? '일시정지' : 'PAUSED'), W / 2, H * 0.4);
-        ctx.font = `${Math.floor(TILE * 0.28)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.strokeStyle = '#1a1a22';
+        ctx.lineWidth = 5;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(pauseLabel, W / 2, H * 0.4);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(pauseLabel, W / 2, H * 0.4);
+        ctx.font = `bold ${Math.floor(TILE * 0.28)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillStyle = '#aab4d0';
         ctx.fillText(lang === 'ko' ? 'P 키로 재개' : 'Press P to resume', W / 2, H * 0.48);
+    }
+
+    // 단축키 도움말 오버레이 (H 키)
+    if (showHelp) {
+        const isKo = lang === 'ko';
+        const rows = [
+            ['1 - 5', isKo ? '타워 선택 / 토글' : 'Select / toggle tower'],
+            ['0  /  `', isKo ? '선택 해제' : 'Deselect'],
+            ['Q', isKo ? '게임 속도 변경 (×1/×2/×3)' : 'Cycle game speed'],
+            ['Space  /  Enter', isKo ? '시작 / 다음 웨이브 스킵' : 'Start / skip wave'],
+            ['P', isKo ? '일시정지' : 'Pause'],
+            ['U', isKo ? '선택 타워 업그레이드' : 'Upgrade selected tower'],
+            ['S', isKo ? '선택 타워 판매' : 'Sell selected tower'],
+            ['M', isKo ? '음소거' : 'Mute / unmute'],
+            ['L', isKo ? '언어 전환 (한 / EN)' : 'Toggle language'],
+            ['Esc  /  우클릭', isKo ? '선택 해제 / 패널 닫기' : 'Cancel / close'],
+            ['H  /  ?', isKo ? '단축키 도움말 토글' : 'Toggle this help'],
+        ];
+
+        // 라디얼 비네트 (어둡게)
+        const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.15, W / 2, H / 2, Math.max(W, H) * 0.7);
+        vg.addColorStop(0, 'rgba(5,8,20,0.7)');
+        vg.addColorStop(1, 'rgba(0,0,5,0.85)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, W, H);
+
+        // 측정 → 패널 크기 결정
+        const titleFs = Math.floor(TILE * 0.42);
+        const rowFs = Math.floor(TILE * 0.26);
+        const keyFont = `900 ${rowFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        const labelFont = `${rowFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        ctx.font = keyFont;
+        let maxKeyW = 0;
+        for (const r of rows) maxKeyW = Math.max(maxKeyW, ctx.measureText(r[0]).width);
+        ctx.font = labelFont;
+        let maxLabelW = 0;
+        for (const r of rows) maxLabelW = Math.max(maxLabelW, ctx.measureText(r[1]).width);
+        const colGap = Math.max(20, Math.floor(TILE * 0.4));
+        const rowH = rowFs + 12;
+        const panelPad = Math.max(20, Math.floor(TILE * 0.5));
+        const panelW = Math.min(W * 0.9, maxKeyW + colGap + maxLabelW + panelPad * 2);
+        const panelH = panelPad * 2 + titleFs + 14 + rows.length * rowH + 30;
+        const panelX = W / 2 - panelW / 2;
+        const panelY = H / 2 - panelH / 2;
+
+        // 패널 배경 + 테두리 (Game Over 모달 톤)
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 30;
+        drawRoundRect(panelX, panelY, panelW, panelH, 18);
+        const pgrad = ctx.createLinearGradient(0, panelY, 0, panelY + panelH);
+        pgrad.addColorStop(0, 'rgba(30,34,60,0.97)');
+        pgrad.addColorStop(1, 'rgba(15,18,38,0.97)');
+        ctx.fillStyle = pgrad;
+        ctx.fill();
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(120,180,255,0.5)';
+        ctx.lineWidth = 2;
+        drawRoundRect(panelX, panelY, panelW, panelH, 18);
+        ctx.stroke();
+        // 상단 액센트 라인
+        ctx.fillStyle = 'rgba(120,180,255,0.55)';
+        drawRoundRect(panelX, panelY, panelW, 4, { tl: 18, tr: 18, bl: 0, br: 0 });
+        ctx.fill();
+
+        // 타이틀
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `900 ${titleFs}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.shadowColor = 'rgba(120,180,255,0.6)';
+        ctx.shadowBlur = 10;
+        ctx.fillText(isKo ? '단축키' : 'Shortcuts', W / 2, panelY + panelPad);
         ctx.shadowBlur = 0;
+
+        // 행 그리기
+        const rowStartY = panelY + panelPad + titleFs + 18;
+        const keyColX = panelX + panelPad;
+        const labelColX = keyColX + maxKeyW + colGap;
+        ctx.textBaseline = 'middle';
+        for (let ri = 0; ri < rows.length; ri++) {
+            const ry = rowStartY + ri * rowH + rowH / 2;
+            // 키 (강조)
+            ctx.font = keyFont;
+            ctx.fillStyle = '#ffd84a';
+            ctx.textAlign = 'left';
+            ctx.fillText(rows[ri][0], keyColX, ry);
+            // 라벨
+            ctx.font = labelFont;
+            ctx.fillStyle = '#cfd8ec';
+            ctx.fillText(rows[ri][1], labelColX, ry);
+        }
+
+        // 닫기 안내
+        ctx.font = `${Math.floor(TILE * 0.22)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
+        ctx.fillStyle = 'rgba(170,180,210,0.7)';
+        ctx.textAlign = 'center';
+        ctx.fillText(isKo ? 'H / Esc / 클릭으로 닫기' : 'Press H / Esc / click to close',
+            W / 2, panelY + panelH - panelPad * 0.6);
+
+        ctx.textBaseline = 'alphabetic';
+
+        // 패널 영역을 클릭 가능 hotspot으로 등록 (커서 pointer)
+        addPointerHotspot(panelX, panelY, panelW, panelH);
     }
 
     // Rotate overlay (portrait mobile)
@@ -3986,13 +4355,16 @@ function draw() {
         ctx.fillStyle = 'rgba(0,0,0,0.85)';
         ctx.fillRect(0, 0, W, H);
         ctx.fillStyle = '#88ccff';
-        ctx.font = `${Math.floor(Math.min(W, H) * 0.12)}px sans-serif`;
+        ctx.font = `${Math.floor(Math.min(W, H) * 0.12)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('📱', W / 2, H * 0.38);
-        ctx.font = `bold ${Math.floor(Math.min(W, H) * 0.045)}px sans-serif`;
+        ctx.font = `bold ${Math.floor(Math.min(W, H) * 0.045)}px "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Pretendard", system-ui, sans-serif`;
         ctx.fillText(txt().rotatePlease, W / 2, H * 0.53);
     }
+
+    // 그리기 완료 후 hotspot 변화 반영 (예: 패널 열림/닫힘)
+    updateCursor();
 }
 
 // ---- Draw tower body (레벨별 진화 시각) ----
@@ -4308,7 +4680,7 @@ function drawTowerBody(x, y, s, typeIndex, angle, level) {
 
         ctx.restore();
 
-    } else if (typeIndex === 2) {
+    } else if (typeIndex === 3) {
         // === 얼음 타워 ===
         // Lv1: 기본 크리스털. Lv2-3: 기둥 커짐. Lv4: 궤도 조각. Lv5: 왕관 결정 + 빛 오라
         // 바닥 얼음 링
@@ -4427,7 +4799,7 @@ function drawTowerBody(x, y, s, typeIndex, angle, level) {
         }
         ctx.restore();
 
-    } else if (typeIndex === 3) {
+    } else if (typeIndex === 2) {
         // === 번개 타워 — 레벨마다 극적 변화 ===
         const pulse = 0.7 + Math.sin(Date.now() / 150) * 0.3;
 
@@ -5305,6 +5677,12 @@ function handleClick(pos) {
     // Init audio on first interaction (browser policy)
     soundManager.init();
 
+    // 도움말 오버레이 표시 중이면 어디든 클릭 시 닫기
+    if (showHelp) {
+        showHelp = false;
+        return;
+    }
+
     if (gameOver) {
         if (gameOverTimer > 2.0) {
             // 보상형 광고 버튼 클릭 체크
@@ -5410,6 +5788,7 @@ function handleClick(pos) {
                 // 같은 버튼 다시 누르면 선택 해제 (토글)
                 selectedTower = (selectedTower === i) ? -1 : i;
                 showUpgradeFor = null;
+                buildIdleTimer = 0;
                 updateCursor();
                 soundManager.uiClick();
                 return;
@@ -5417,8 +5796,17 @@ function handleClick(pos) {
         }
     }
 
-    // Skip wave timer
-    if (pos.y < TILE * 1.5 && betweenWaves) {
+    // 시작/스킵 CTA 박스 클릭 (박스 영역 정확히 매칭)
+    if (betweenWaves && window._startCtaBtn) {
+        const cb = window._startCtaBtn;
+        if (pos.x >= cb.x && pos.x <= cb.x + cb.w && pos.y >= cb.y && pos.y <= cb.y + cb.h) {
+            startWave();
+            autoStartTimer = 0;
+            return;
+        }
+    }
+    // 호환: 상단 영역 클릭으로도 스킵 (다음 웨이브 카운트다운 시)
+    if (pos.y < TILE * 1.5 && betweenWaves && wave > 0) {
         startWave();
         autoStartTimer = 0;
         return;
@@ -5456,6 +5844,8 @@ function handleClick(pos) {
                     Math.cos(angle) * 1.5, Math.sin(angle) * 1.5, 0.4, 2
                 ));
             }
+            // 건설 후 10초간 추가 건설이 없으면 자동으로 선택 해제
+            buildIdleTimer = 10;
         }
     }
 }
@@ -5476,6 +5866,7 @@ canvas.addEventListener('mousedown', (e) => {
         // 우클릭 → 선택 해제
         selectedTower = -1;
         showUpgradeFor = null;
+        buildIdleTimer = 0;
         updateCursor();
         return;
     }
@@ -5487,6 +5878,7 @@ canvas.addEventListener('mousemove', (e) => {
     const pos = getCanvasPos(e);
     mousePos = pos;
     handleMove(pos);
+    updateCursor();
 });
 
 canvas.addEventListener('touchstart', (e) => {
@@ -5507,11 +5899,13 @@ document.addEventListener('keydown', (e) => {
     if (keyToTower.hasOwnProperty(e.key)) {
         const i = keyToTower[e.key];
         selectedTower = (selectedTower === i) ? -1 : i;
+        buildIdleTimer = 0;
         updateCursor();
     }
     if (e.key === '0' || e.key === '`') {
         // 명시적 선택 해제
         selectedTower = -1;
+        buildIdleTimer = 0;
         updateCursor();
     }
     if (e.key === ' ' || e.key === 'Enter') {
@@ -5530,9 +5924,14 @@ document.addEventListener('keydown', (e) => {
         }
     }
     if (e.key === 'Escape') {
-        showUpgradeFor = null;
-        selectedTower = -1;
-        updateCursor();
+        if (showHelp) {
+            showHelp = false;
+        } else {
+            showUpgradeFor = null;
+            selectedTower = -1;
+            buildIdleTimer = 0;
+            updateCursor();
+        }
     }
     if (e.key === 'p' || e.key === 'P') {
         if (!gameOver && !betweenWaves) paused = !paused;
@@ -5552,6 +5951,9 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.key === 'l' || e.key === 'L') {
         lang = lang === 'ko' ? 'en' : 'ko';
+    }
+    if (e.key === 'h' || e.key === 'H' || e.key === '?') {
+        showHelp = !showHelp;
     }
 });
 
@@ -5573,6 +5975,7 @@ function restartGame() {
     enemySpawnQueue = [];
     showUpgradeFor = null;
     selectedTower = -1;
+    buildIdleTimer = 0;
     updateCursor();
     // v2.0
     screenShakeIntensity = 0;
@@ -5630,6 +6033,16 @@ function gameLoop(time) {
 
     // Game over timer (real time)
     if (gameOver) gameOverTimer += rawDt;
+
+    // 건설 후 자동 선택 해제 카운트다운 (실시간)
+    if (buildIdleTimer > 0 && selectedTower >= 0) {
+        buildIdleTimer -= rawDt;
+        if (buildIdleTimer <= 0) {
+            buildIdleTimer = 0;
+            selectedTower = -1;
+            updateCursor();
+        }
+    }
 
     if (!showRotateOverlay) {
         update(dt);

@@ -10,7 +10,11 @@
       "Bash(curl -s -o /dev/null -w \"server: %{http_code}\\\\n\" http://localhost:8765/game.js)",
       "Bash(curl *)",
       "Bash(open *)",
-      "Bash(gh api *)"
+      "Bash(gh api *)",
+      "Bash(grep -n \"^function draw\\\\|^}\\\\s*$\" /Users/kimjinseob/games/tower-defense/game.js)",
+      "Bash(grep -iE \"gold|score|wave|damage|hp|cost|sell|highscore|reward|life|liv|fillText\\\\\\(.*\\\\\\\\\\\\$\\\\\\\\{|fillText\\\\\\(.*\\\\+|fillText\\\\\\(\\\\`\")",
+      "Bash(grep -nE \"fillText\\\\\\(.*\\\\\\\\\\\\$\\\\{|fillText\\\\\\(.*\\\\+|fillText\\\\\\(\\\\`\" /Users/kimjinseob/games/tower-defense/game.js)",
+      "Bash(grep *)"
     ]
   }
 }
